@@ -18,6 +18,11 @@ import urllib.request
 from typing import List, Optional, Dict, Tuple
 from tqdm import tqdm
 
+try:
+    import zstandard
+except ImportError:
+    zstandard = None
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 
@@ -56,6 +61,16 @@ class CS2ReplayDownloader:
                 out_path = os.path.join(destination_dir, base_name if base_name.endswith('.dem') else f"{base_name}.dem")
                 with gzip.open(file_path, 'rb') as f_in, open(out_path, 'wb') as f_out:
                     f_out.write(f_in.read())
+                extracted_dems.append(out_path)
+
+            elif ext == '.zst':
+                # Single .dem.zst file (standard in CS2 Faceit)
+                if zstandard is None:
+                    raise ImportError("zstandard package is required to decompress .zst files. Run 'pip install zstandard'")
+                out_path = os.path.join(destination_dir, base_name if base_name.endswith('.dem') else f"{base_name}.dem")
+                dctx = zstandard.ZstdDecompressor()
+                with open(file_path, 'rb') as f_in, open(out_path, 'wb') as f_out:
+                    dctx.copy_stream(f_in, f_out)
                 extracted_dems.append(out_path)
 
             elif ext == '.bz2':
@@ -162,7 +177,8 @@ class CS2ReplayDownloader:
                     
                 if demo_url and isinstance(demo_url, str):
                     logging.info(f"Found demo URL for match {match_id}: {demo_url}")
-                    return self.download_url(demo_url, is_cheater=is_cheater, custom_filename=f"faceit_{match_id}.dem.gz")
+                    ext_suffix = ".dem.zst" if demo_url.endswith(".zst") else ".dem.gz"
+                    return self.download_url(demo_url, is_cheater=is_cheater, custom_filename=f"faceit_{match_id}{ext_suffix}")
                 else:
                     logging.warning(f"No demo URL available for match {match_id}")
                     return []

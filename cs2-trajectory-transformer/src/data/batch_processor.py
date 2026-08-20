@@ -71,7 +71,7 @@ def process_single_demo(
                 
             # Filter weapon fires by this player
             if not fire_events.empty and 'user_steamid' in fire_events.columns:
-                p_fires = fire_events[fire_events['user_steamid'] == steamid]
+                p_fires = fire_events[fire_events['user_steamid'].astype(str) == str(steamid)]
                 event_ticks = p_fires['tick'].tolist() if 'tick' in p_fires.columns else []
             else:
                 event_ticks = []
