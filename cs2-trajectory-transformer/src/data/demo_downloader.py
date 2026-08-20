@@ -170,6 +170,52 @@ class CS2ReplayDownloader:
             logging.error(f"Faceit API query error for match {match_id}: {e}")
             return []
 
+    
+    def fetch_banned_cheater_matches(
+        self, 
+        banned_steam_or_nicknames: List[str], 
+        api_key: Optional[str] = None,
+        matches_per_player: int = 2
+    ) -> List[str]:
+        """
+        Queries Faceit API for confirmed banned cheaters and downloads their match replays.
+        This directly fulfills the 1,000 Cheater Demos requirement in the concept paper.
+        """
+        headers = {'User-Agent': 'CS2TrajectoryTransformer/1.0'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        all_downloaded = []
+        for player in banned_steam_or_nicknames:
+            try:
+                # 1. Resolve player ID
+                url = f"https://open.faceit.com/data/v4/players?nickname={player}"
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req) as resp:
+                    p_data = json.loads(resp.read().decode('utf-8'))
+                    p_id = p_data.get('player_id')
+                    
+                if not p_id:
+                    continue
+                    
+                # 2. Get player match history
+                hist_url = f"https://open.faceit.com/data/v4/players/{p_id}/history?game=cs2&limit={matches_per_player}"
+                req = urllib.request.Request(hist_url, headers=headers)
+                with urllib.request.urlopen(req) as resp:
+                    hist_data = json.loads(resp.read().decode('utf-8'))
+                    items = hist_data.get('items', [])
+                    
+                for match in items:
+                    m_id = match.get('match_id')
+                    if m_id:
+                        dems = self.fetch_faceit_match_demo(m_id, api_key=api_key, is_cheater=True)
+                        all_downloaded.extend(dems)
+                        
+            except Exception as e:
+                logging.error(f"Error fetching banned matches for {player}: {e}")
+                
+        return all_downloaded
+
     def list_downloaded_demos(self) -> Dict[str, List[str]]:
         """Returns inventory of all available .dem files."""
         clean_dems = [os.path.join(self.clean_dir, f) for f in os.listdir(self.clean_dir) if f.endswith('.dem')]

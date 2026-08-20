@@ -1,24 +1,25 @@
 # 📌 CS2 Trajectory Transformer — Thesis Master Tracker & Roadmap
 
-**Thesis Topic:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers  
-**Author:** Dishann Gutierrez  
-**Degree:** Bachelor of Science in Computer Science (Major in Data Science)  
-**Target Defense & Completion:** Mid-December 2026  
+**Thesis Title:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers  
+**Authors:** Medel & Gutierrez  
+**Degree Program:** Bachelor of Science in Computer Science (Major in Data Science)  
+**Academic Year:** 2026  
+**Target Defense Date:** Mid-December 2026  
 **Last Updated:** August 20, 2026  
 **Post-Completion Guide:** See [POST_COMPLETION_GUIDE.md](POST_COMPLETION_GUIDE.md)  
 
 ---
 
-## 🚦 Master Timeline & Progress Summary (Target: Dec 2026)
+## 🚦 Master Timeline & Phase Overview (Target: Dec 2026)
 
 | Phase | Description | Target Window | Status | Completion % |
 | :--- | :--- | :--- | :---: | :---: |
-| **Phase 1** | Foundations, Kinematics & Parsers | Aug 20 – Aug 21 | 🟢 COMPLETED | 100% |
-| **Phase 2** | Real Replay Ingestion & Scraper Pipeline | Aug 22 – Sep 30 | 🟡 IN PROGRESS | 75% |
-| **Phase 3** | Full-Scale GPU Training & Hyperparameter Tuning | Oct 01 – Oct 31 | ⚪ SCHEDULED | 0% |
-| **Phase 4** | Comparative Benchmarks, Ablations & Latency Profiling | Nov 01 – Nov 18 | ⚪ SCHEDULED | 0% |
-| **Phase 5** | Manuscript Writing (Chapters 1–5) & Revisions | Nov 19 – Dec 05 | ⚪ SCHEDULED | 0% |
-| **Phase 6** | Slide Deck, Mock Rehearsals & Final Defense | Dec 06 – Dec 20 | ⚪ SCHEDULED | 0% |
+| **Phase 1** | Mathematical Foundations, 6 Features & ST-Trans Architecture | Aug 20 – Aug 21 | 🟢 COMPLETED | 100% |
+| **Phase 2** | Real Replay Ingestion (2,000 Matches) & Scraper Pipeline | Aug 22 – Sep 30 | 🟡 IN PROGRESS | 75% |
+| **Phase 3** | Full-Scale GPU Training & InfoNCE Contrastive Tuning | Oct 01 – Oct 31 | ⚪ SCHEDULED | 0% |
+| **Phase 4** | Comparative Benchmarks (XGBoost/BiLSTM), Ablation & Latency | Nov 01 – Nov 18 | ⚪ SCHEDULED | 0% |
+| **Phase 5** | Complete Thesis Manuscript Compilation (Chapters 1–5) | Nov 10 – Dec 05 | ⚪ SCHEDULED | 0% |
+| **Phase 6** | Slide Deck, Mock Rehearsals & Final Oral Defense | Dec 06 – Dec 20 | ⚪ SCHEDULED | 0% |
 
 ---
 
@@ -48,21 +49,21 @@
 - [x] **Task 1.6:** PyTorch ST-Trans Architecture with dual heads (Focal Loss Aimbot + InfoNCE Smurf).
 - [x] **Task 1.7:** Comprehensive Unit Testing (18/18 unit tests passing).
 
-### September 2026: Data Ingestion & Batch Store (IN PROGRESS)
+### September 2026: Data Ingestion & Batch Store (2,000 Matches) (IN PROGRESS)
 - [x] **Task 2.1:** Automated Faceit Open API & HLTV Replay Scraper in `src/data/demo_downloader.py` and `download_demos.py` CLI.
-- [ ] **Task 2.2:** Ingest 1,000 clean demos (Silver to Faceit Level 10 Pro) + 1,000 banned cheater demos.
-- [ ] **Task 2.3:** Run `src/data/batch_processor.py` to extract ATW Parquet arrays.
-- [ ] **Task 2.4:** Generate zero-leakage Train/Validation/Test splits (70/15/15).
+- [ ] **Task 2.2:** Ingest 1,000 clean demos (Silver to Faceit Level 10 Pro) + 1,000 banned cheater demos via Faceit ban registry.
+- [ ] **Task 2.3:** Run multi-threaded `src/data/batch_processor.py` to extract ATW Parquet telemetry stores.
+- [ ] **Task 2.4:** Generate zero-leakage Train/Validation/Test splits (80/10/10).
 
 ### October 2026: Full-Scale Model Training & Tuning
 - [ ] **Task 3.1:** Train ST-Trans on GPU with AdamW and Cosine Annealing scheduler.
-- [ ] **Task 3.2:** Optimize InfoNCE contrastive temperature and focal loss balancing.
+- [ ] **Task 3.2:** Optimize InfoNCE contrastive temperature ($\tau \in [0.05, 0.15]$) and multi-task loss weights.
 - [ ] **Task 3.3:** Save finalized production model checkpoint (`models/checkpoints/best_model.pt`).
 
 ### November 2026: Benchmarks, Ablations & Manuscript Drafting
-- [ ] **Task 4.1:** Run comparative benchmark study vs. Random Forest, Gradient Boosting, MLP, and Bi-LSTM on real data.
-- [ ] **Task 4.2:** Conduct feature ablation studies (with vs. without Tremor, with vs. without Jerk, with vs. without ATW).
-- [ ] **Task 4.3:** Measure server-side inference throughput (validating $< 500$ ms per match latency).
+- [ ] **Task 4.1:** Comparative benchmark study vs. XGBoost, Bi-LSTM, and MLP on real data.
+- [ ] **Task 4.2:** Feature ablation studies (quantifying impact of 8–12 Hz Tremor and Minimum Jerk).
+- [ ] **Task 4.3:** Profile server-side inference throughput (validating $< 500$ ms per match latency).
 - [ ] **Task 4.4:** Generate publication figures (ROC/PR curves, t-SNE latent skill clusters).
 - [ ] **Task 5.1:** Draft complete 5-chapter thesis manuscript (Intro, Lit Review, Methodology, Results, Discussion).
 
@@ -91,4 +92,4 @@
 ---
 
 ## 📝 Change Log & Milestone History
-* **2026-08-20:** Created `download_demos.py` CLI and `src/data/demo_downloader.py` supporting Faceit Open API, direct URLs, and archive decompression (.gz, .bz2, .zip, .tar.gz). 18/18 unit tests passing.
+* **2026-08-20:** Master roadmap updated and synchronized with approved Thesis Concept Paper (Medel & Gutierrez, 2026). All 6 phases structured with targeted deadlines to ensure oral defense by mid-December 2026.
