@@ -2,59 +2,80 @@
 
 **Degree:** Bachelor of Science in Computer Science (Major in Data Science)  
 **Academic Year:** 2026  
+**Author:** Dishann Gutierrez  
 
 ---
 
 ## 📌 Project Overview
-This repository contains the official codebase for the thesis project: **"Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers"**.
+This repository contains the official implementation for the thesis research: **"Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers"**.
 
-The project processes 128-tick spatial-temporal mouse view angles $(\phi, \theta)$ and player movement telemetry from Counter-Strike 2 (CS2) match replay files (`.dem`) to extract biological neuromuscular kinematic metrics (Angular Jerk, Trajectory Curvature Entropy) and train a **Spatial-Temporal Trajectory Transformer (ST-Trans)** in PyTorch.
+The system processes 128-tick spatial-temporal mouse view-angles $(\phi, 	heta)$ and player movement telemetry from Counter-Strike 2 (CS2) match replay files (`.dem`) using `demoparser2`. It extracts neuromuscular kinematic features:
+1. **Euler-Wrapped Angular Velocity ($\omega_t$):** Geodesic great-circle angular speed on the unit sphere sight vector.
+2. **Angular Acceleration ($lpha_t$) and Minimum Jerk ($j_t$):** Higher-order derivatives of motor coordination (Flash & Hogan model).
+3. **Spherical Geodesic Trajectory Curvature ($\kappa_t$):** Curvature computed via 3D sight-line vector cross products.
+4. **Trajectory Curvature Shannon Entropy ($S_c$):** Sliding-window spatial entropy.
+5. **8–12 Hz Physiological Hand Tremor Band Power:** Relative spectral power via FFT/Welch's PSD to distinguish biological muscle tremor from algorithmic cursor updates.
+
+The extracted telemetry sequences are processed by a **Spatial-Temporal Trajectory Transformer (ST-Trans)** featuring a dual-head output (Aimbot Binary Classification + Smurf Contrastive Embedding).
 
 ---
 
 ## 📁 Repository Structure
 ```
 cs2-trajectory-transformer/
-├── requirements.txt         <- Package dependencies
-├── README.md                <- Project documentation
-├── demo_sample.py           <- Starter script to verify parsing & model pipeline
+├── requirements.txt         <- Package dependencies (PyTorch, demoparser2, scipy, etc.)
+├── README.md                <- Project overview and setup instructions
+├── THESIS_TRACKER.md        <- Master thesis progress and milestone checklist
+├── setup_env.ps1            <- 1-Click Automated Setup for Windows (PowerShell)
+├── setup_env.bat            <- 1-Click Automated Setup for Windows (CMD)
+├── setup_env.sh             <- 1-Click Automated Setup for Linux / macOS
+├── demo_sample.py           <- End-to-end verification pipeline
+├── tests/
+│   └── test_kinematics.py   <- Unit tests for biomechanical feature extraction
 ├── data/
-│   ├── raw_demos/           <- Place downloaded .dem files here
-│   └── processed_csv/       <- Extracted trajectory DataFrames
+│   ├── raw_demos/           <- Directory for downloaded .dem match replays
+│   └── processed_csv/       <- Parsed trajectory parquet / CSV arrays
 └── src/
     ├── features/
-    │   └── kinematics.py    <- Angular Jerk & Curvature Entropy extraction
+    │   └── kinematics.py    <- Biomechanical feature engine (Wrapping, Curvature, Jerk, Tremor)
     └── models/
         └── st_transformer.py<- PyTorch Spatial-Temporal Trajectory Transformer
 ```
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 1-Click Environment Setup (Any New Device)
 
-### 1. Set Up Virtual Environment (Local PC)
-Open PowerShell or Command Prompt in this folder:
-```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+### Option A: Windows (PowerShell) — Recommended
+Clone the repository and run:
+```powershell
+.\setup_env.ps1
 ```
 
-### 2. Run Sample Pipeline Verification
-```bash
-python demo_sample.py
+### Option B: Windows (Command Prompt)
+Double-click or run:
+```cmd
+setup_env.bat
 ```
-This script generates synthetic 128-tick trajectory data, extracts kinematic features (Angular Velocity & Jerk), feeds them into the PyTorch ST-Trans model, and outputs predictions for Aimbot Probability & Estimated Skill ELO.
+
+### Option C: Linux / macOS
+```bash
+chmod +x setup_env.sh
+./setup_env.sh
+```
 
 ---
 
-## 🔬 Key Mathematical Metrics (`src/features/kinematics.py`)
+## 🧪 Running Unit Tests & Pipeline Verification
 
-1. **Angular Velocity ($\omega_t$):**
-   $$\omega_t = \frac{\sqrt{(\theta_t - \theta_{t-1})^2 + (\phi_t - \phi_{t-1})^2}}{\Delta t}$$
+To verify that all kinematic calculations, wrapping boundaries, and model inferences pass:
+```bash
+# Activate virtual environment
+.\venv\Scripts\activate
 
-2. **Angular Jerk ($j_t$):**
-   $$j_t = \frac{\Delta^2 \omega_t}{\Delta t^2}$$
+# Run pytest unit test suite
+pytest tests/
 
-3. **Trajectory Curvature Entropy ($S_c$):**
-   $$S_c = -\sum_{i \in W} P(\kappa_i) \log_2 P(\kappa_i)$$
+# Run end-to-end pipeline verification
+python demo_sample.py
+```

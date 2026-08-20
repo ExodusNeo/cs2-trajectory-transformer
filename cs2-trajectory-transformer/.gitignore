@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# PyTest & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyTorch / Model Weights
+*.pt
+*.pth
+*.onnx
+
+# CS2 Large Binary Data Files (.dem demos & raw datasets)
+data/raw_demos/*.dem
+data/raw_demos/*.zip
+data/raw_demos/*.tar.gz
+data/raw_demos/*.bz2
+*.dem
+
+# IDEs & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
