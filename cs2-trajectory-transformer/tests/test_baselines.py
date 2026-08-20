@@ -11,7 +11,6 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from models.baselines import BiLSTMBaseline, ClassicalBaselines
-from data.demo_downloader import DemoDownloader
 
 
 def test_bilstm_baseline_forward():

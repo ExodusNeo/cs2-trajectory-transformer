@@ -42,13 +42,24 @@ htmlcov/
 *.pt
 *.pth
 *.onnx
+models/checkpoints/
 
-# CS2 Large Binary Data Files (.dem demos & raw datasets)
-data/raw_demos/*.dem
-data/raw_demos/*.zip
-data/raw_demos/*.tar.gz
-data/raw_demos/*.bz2
+# CS2 Large Data & Telemetry Files (.dem replays, .parquet datasets)
+*.parquet
 *.dem
+*.gz
+*.bz2
+*.zip
+*.tar.gz
+data/
+**/data/
+processed_parquet/
+**/processed_parquet/
+raw_demos/
+**/raw_demos/
+
+# Generated Test Artifacts & Temporary Reports
+reports/test_*.png
 
 # IDEs & OS files
 .vscode/
