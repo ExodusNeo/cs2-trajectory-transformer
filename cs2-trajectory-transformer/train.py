@@ -6,6 +6,7 @@ Optimizes Dual-Task Objectives:
 """
 
 import os
+import sys
 import argparse
 import logging
 import torch
@@ -13,6 +14,8 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from sklearn.metrics import roc_auc_score, f1_score
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from models.st_transformer import STTrajectoryTransformer
 from models.losses import SupervisedInfoNCELoss, FocalLoss
@@ -104,3 +107,75 @@ def evaluate(
         'auroc': auroc,
         'f1': f1
     }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train ST-Trans CS2 Trajectory Transformer")
+    parser.add_argument("--data_dir", type=str, default="data/processed_parquet", help="Directory with Parquet telemetry")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
+    parser.add_argument("--d_model", type=int, default=64, help="Transformer hidden dimension")
+    parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads")
+    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers")
+    parser.add_argument("--save_path", type=str, default="models/checkpoints/best_model.pt", help="Checkpoint save path")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[*] Training ST-Trans on {device} (Epochs: {args.epochs}, Batch Size: {args.batch_size})")
+
+    # Dataloaders
+    train_loader, val_loader, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
+    print(f"[*] Dataset split: {len(train_loader.dataset)} Train, {len(val_loader.dataset)} Val, {len(test_loader.dataset)} Test samples.")
+
+    # Model
+    model = STTrajectoryTransformer(
+        feature_dim=8,
+        d_model=args.d_model,
+        nhead=args.nhead,
+        num_layers=args.num_layers,
+        dim_feedforward=args.d_model * 4
+    ).to(device)
+
+    # Loss functions & Optimizer
+    criterion_aimbot = FocalLoss(alpha=0.25, gamma=2.0)
+    criterion_contrastive = SupervisedInfoNCELoss(temperature=0.1)
+    criterion_elo = nn.MSELoss()
+
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2)
+
+    os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
+    best_auroc = 0.0
+
+    print("\n" + "=" * 65)
+    print(f"{'Epoch':<8}{'Train Loss':<14}{'Aimbot Loss':<14}{'Val AUROC':<12}{'Val F1':<10}")
+    print("=" * 65)
+
+    for epoch in range(1, args.epochs + 1):
+        train_metrics = train_one_epoch(
+            model=model,
+            dataloader=train_loader,
+            optimizer=optimizer,
+            criterion_aimbot=criterion_aimbot,
+            criterion_contrastive=criterion_contrastive,
+            criterion_elo=criterion_elo,
+            device=device
+        )
+        scheduler.step()
+
+        val_metrics = evaluate(model, val_loader, criterion_aimbot, device)
+
+        print(f"{epoch:<8}{train_metrics['loss']:<14.4f}{train_metrics['aimbot_loss']:<14.4f}{val_metrics['auroc']:<12.4f}{val_metrics['f1']:<10.4f}")
+
+        if val_metrics['auroc'] >= best_auroc:
+            best_auroc = val_metrics['auroc']
+            torch.save(model.state_dict(), args.save_path)
+
+    print("=" * 65)
+    print(f"[SUCCESS] Training Complete! Best Validation AUROC: {best_auroc:.4f}")
+    print(f"[SUCCESS] Model saved to {args.save_path}")
+
+
+if __name__ == "__main__":
+    main()

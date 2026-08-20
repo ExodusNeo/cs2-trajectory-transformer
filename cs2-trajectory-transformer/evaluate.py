@@ -8,6 +8,7 @@ Computes:
 """
 
 import os
+import sys
 import argparse
 import numpy as np
 import pandas as pd
@@ -21,6 +22,8 @@ from sklearn.metrics import (
     roc_curve
 )
 from typing import Dict, Tuple
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from models.st_transformer import STTrajectoryTransformer
 from data.dataset import create_partitioned_dataloaders
@@ -88,3 +91,46 @@ def evaluate_model_on_loader(
     metrics['ELO_MAE'] = elo_mae
     
     return metrics, y_true, y_pred, embeddings
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate Trained ST-Trans Checkpoint")
+    parser.add_argument("--data_dir", type=str, default="data/processed_parquet", help="Directory containing Parquet files")
+    parser.add_argument("--model_path", type=str, default="models/checkpoints/best_model.pt", help="Path to saved model checkpoint")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for evaluation")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[*] Evaluating model checkpoint: {args.model_path} on {device}")
+
+    # Load model
+    model = STTrajectoryTransformer(
+        feature_dim=8, 
+        d_model=64, 
+        nhead=4, 
+        num_layers=4, 
+        dim_feedforward=256
+    ).to(device)
+    if os.path.exists(args.model_path):
+        checkpoint = torch.load(args.model_path, map_location=device)
+        model.load_state_dict(checkpoint)
+        print("[*] Successfully loaded checkpoint weights.")
+    else:
+        print(f"[!] Checkpoint not found at {args.model_path}, evaluating with initialized weights.")
+
+    # Load test dataloader
+    _, _, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
+    print(f"[*] Test dataset size: {len(test_loader.dataset)} segments ({len(test_loader)} batches)")
+
+    metrics, y_true, y_pred, _ = evaluate_model_on_loader(model, test_loader, device)
+
+    print("\n" + "=" * 50)
+    print("      THESIS EVALUATION METRICS (TEST SET)      ")
+    print("=" * 50)
+    for k, v in metrics.items():
+        print(f"  > {k:<18}: {v:.4f}")
+    print("=" * 50)
+
+
+if __name__ == "__main__":
+    main()
