@@ -3,22 +3,22 @@
 **Thesis Topic:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers  
 **Author:** Dishann Gutierrez  
 **Degree:** Bachelor of Science in Computer Science (Major in Data Science)  
-**Target Completion:** December 2026  
+**Target Defense & Completion:** Mid-December 2026  
 **Last Updated:** August 20, 2026  
 **Post-Completion Guide:** See [POST_COMPLETION_GUIDE.md](POST_COMPLETION_GUIDE.md)  
 
 ---
 
-## 🚦 Overall Project Status Summary
+## 🚦 Master Timeline & Progress Summary (Target: Dec 2026)
 
 | Phase | Description | Target Window | Status | Completion % |
 | :--- | :--- | :--- | :---: | :---: |
-| **Phase 1** | Mathematical Foundations & Parser Engineering | Aug 21 – Sep 12 | 🟢 COMPLETED | 100% |
-| **Phase 2** | Dataset Assembly & Telemetry Store (2,000 Demos) | Sep 13 – Oct 03 | 🟡 IN PROGRESS | 85% |
-| **Phase 3** | ST-Trans Architecture & InfoNCE Training | Oct 04 – Oct 31 | 🟢 COMPLETED | 100% |
-| **Phase 4** | Evaluation, Ablation Studies & Benchmarks | Nov 01 – Nov 20 | 🟡 IN PROGRESS | 75% |
-| **Phase 5** | Manuscript Writing, Defense Prep & Release | Nov 21 – Dec 20 | ⚪ NOT STARTED | 0% |
-| **Post-Thesis** | Deployment, ONNX Export & Paper Publication | Post-Dec 2026 | ⚪ DOCUMENTED | 100% |
+| **Phase 1** | Foundations, Kinematics & Parsers | Aug 20 – Aug 21 | 🟢 COMPLETED | 100% |
+| **Phase 2** | Real Replay Ingestion & Scraper Pipeline | Aug 22 – Sep 30 | 🟡 IN PROGRESS | 75% |
+| **Phase 3** | Full-Scale GPU Training & Hyperparameter Tuning | Oct 01 – Oct 31 | ⚪ SCHEDULED | 0% |
+| **Phase 4** | Comparative Benchmarks, Ablations & Latency Profiling | Nov 01 – Nov 18 | ⚪ SCHEDULED | 0% |
+| **Phase 5** | Manuscript Writing (Chapters 1–5) & Revisions | Nov 19 – Dec 05 | ⚪ SCHEDULED | 0% |
+| **Phase 6** | Slide Deck, Mock Rehearsals & Final Defense | Dec 06 – Dec 20 | ⚪ SCHEDULED | 0% |
 
 ---
 
@@ -37,86 +37,39 @@
 
 ---
 
-## 📋 Detailed Task Checklist
+## 📋 Month-by-Month Milestone Checklist
 
-### Phase 1: Mathematical Foundations & Parser Engineering (Aug 21 – Sep 12)
-- [x] **Task 1.1: Fix Euler Angle Wrapping in Kinematics**
-  - Implemented circular difference `(Δθ + π) % (2π) - π` in `src/features/kinematics.py`.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 1.2: Spherical Trajectory Curvature**
-  - Implemented 3D sight-line vector cross product curvature on unit sphere.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 1.3: 8–12 Hz Physiological Tremor Power Spectrum**
-  - Implemented FFT/Welch sliding-window band power extraction in `src/features/kinematics.py`.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 1.4: CS2 Demo Parser Module (`demoparser2`)**
-  - Built `src/data/demo_parser.py` (`CS2DemoParser`) to extract 128-tick coordinates, viewangles, and weapon fire events.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 1.5: Active Tracking Window (ATW) Extractor**
-  - Implemented 3D geometric visual cone ($30^\circ$ enemy FOV) and temporal combat buffers ($\pm 64$ ticks around shot events) in `src/data/atw_filter.py`.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 1.6: Unit Testing & Verification**
-  - Created test suite in `tests/test_kinematics.py` and `tests/test_parser.py` (7/7 tests passing).
-  - Status: ✅ Done (2026-08-20)
+### August 2026: Foundations & Verified Core Architecture (100% COMPLETED)
+- [x] **Task 1.1:** Fix Euler Angle Wrapping in Kinematics (`src/features/kinematics.py`).
+- [x] **Task 1.2:** Spherical Geodesic Trajectory Curvature on unit sphere.
+- [x] **Task 1.3:** 8–12 Hz Physiological Hand Tremor Power Spectrum via FFT.
+- [x] **Task 1.4:** CS2 Demo Parser Module (`src/data/demo_parser.py` using `demoparser2`).
+- [x] **Task 1.5:** Active Tracking Window (ATW) Extractor (`src/data/atw_filter.py`).
+- [x] **Task 1.6:** PyTorch ST-Trans Architecture with dual heads (Focal Loss Aimbot + InfoNCE Smurf).
+- [x] **Task 1.7:** Comprehensive Unit Testing (18/18 unit tests passing).
 
----
+### September 2026: Data Ingestion & Batch Store (IN PROGRESS)
+- [x] **Task 2.1:** Automated Faceit Open API & HLTV Replay Scraper in `src/data/demo_downloader.py` and `download_demos.py` CLI.
+- [ ] **Task 2.2:** Ingest 1,000 clean demos (Silver to Faceit Level 10 Pro) + 1,000 banned cheater demos.
+- [ ] **Task 2.3:** Run `src/data/batch_processor.py` to extract ATW Parquet arrays.
+- [ ] **Task 2.4:** Generate zero-leakage Train/Validation/Test splits (70/15/15).
 
-### Phase 2: Dataset Assembly & Telemetry Store (Sep 13 – Oct 03)
-- [x] **Task 2.1: Demo Replay Downloader & Decompressor**
-  - Built `src/data/demo_downloader.py` for automated retrieval and decompression (.gz, .bz2, .zip) of Faceit/HLTV replay files.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 2.2: Batch Telemetry Processing**
-  - Built `src/data/batch_processor.py` for parallel extraction of `.dem` replays into Parquet format.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 2.3: Data Leakage Prevention Partitioning**
-  - Strict Player-ID and Match-ID split algorithm in `src/data/dataset.py` (Zero Data Leakage).
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 2.4: PyTorch Dataset & DataLoader Pipeline**
-  - Implemented `CS2TrajectoryDataset` and `collate_trajectory_batch` with attention masks and sequence padding.
-  - Status: ✅ Done (2026-08-20)
+### October 2026: Full-Scale Model Training & Tuning
+- [ ] **Task 3.1:** Train ST-Trans on GPU with AdamW and Cosine Annealing scheduler.
+- [ ] **Task 3.2:** Optimize InfoNCE contrastive temperature and focal loss balancing.
+- [ ] **Task 3.3:** Save finalized production model checkpoint (`models/checkpoints/best_model.pt`).
 
----
+### November 2026: Benchmarks, Ablations & Manuscript Drafting
+- [ ] **Task 4.1:** Run comparative benchmark study vs. Random Forest, Gradient Boosting, MLP, and Bi-LSTM on real data.
+- [ ] **Task 4.2:** Conduct feature ablation studies (with vs. without Tremor, with vs. without Jerk, with vs. without ATW).
+- [ ] **Task 4.3:** Measure server-side inference throughput (validating $< 500$ ms per match latency).
+- [ ] **Task 4.4:** Generate publication figures (ROC/PR curves, t-SNE latent skill clusters).
+- [ ] **Task 5.1:** Draft complete 5-chapter thesis manuscript (Intro, Lit Review, Methodology, Results, Discussion).
 
-### Phase 3: Spatial-Temporal Transformer Implementation & Training (Oct 04 – Oct 31)
-- [x] **Task 3.1: Upgraded ST-Trans Architecture**
-  - 4-layer Transformer Encoder, 8 attention heads, $d_{model} = 128$, GELU activations, mask-aware pooling in `src/models/st_transformer.py`.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 3.2: Dual-Head Implementation**
-  - Aimbot Head: Binary classification with Sigmoid and Focal Loss.
-  - Smurf Head: 32-dim unit-normalized latent projection with **Supervised InfoNCE Contrastive Loss** + calibrated ELO estimator in `src/models/losses.py`.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 3.3: Model Training Script & Scheduler**
-  - Implemented `train.py` with AdamW, Cosine Annealing, Focal Loss, and InfoNCE alignment tracking.
-  - Status: ✅ Done (2026-08-20)
-
----
-
-### Phase 4: Evaluation, Ablation Studies & Benchmarking (Nov 01 – Nov 20)
-- [x] **Task 4.1: Comparative Baselines Implementation**
-  - Implemented Random Forest, Gradient Boosting, MLP, and Bi-LSTM sequential baselines in `src/models/baselines.py`.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 4.2: Evaluation & Metrics Engine**
-  - Implemented `evaluate.py` calculating AUROC, AUPRC, FPR at 95% TPR, F1, and ELO MAE.
-  - Status: ✅ Done (2026-08-20)
-- [x] **Task 4.3: Publication Visualization Suite**
-  - Implemented `visualize.py` generating high-DPI ROC curves, Precision-Recall curves, and t-SNE 2D latent space projections.
-  - Status: ✅ Done (2026-08-20)
-- [ ] **Task 4.4: Full Dataset Ablation & Latency Benchmark Runs**
-  - Execute feature ablation and latency tests once full 2,000 match dataset is ingested.
-  - Status: ⏳ Pending Full Replay Ingestion
-
----
-
-### Phase 5: Manuscript Writing, Defense Prep & Release (Nov 21 – Dec 20)
-- [ ] **Task 5.1: Thesis Manuscript Chapters (1–5)**
-  - Draft Chapters: Introduction, Literature Review, Methodology, Results, Discussion & Conclusion.
-  - Status: ⚪ Not Started
-- [ ] **Task 5.2: Defense Slide Deck & Mock Presentations**
-  - Build slide deck with high-res figures and rehearsed speaking scripts.
-  - Status: ⚪ Not Started
-- [ ] **Task 5.3: Codebase Polish & Final Defense**
-  - Prepare reproducible environment, pre-trained weights, and conduct oral defense.
-  - Status: ⚪ Not Started
+### December 2026: Defense Presentation & Final Release
+- [ ] **Task 6.1:** Build 15–20 slide defense presentation deck.
+- [ ] **Task 6.2:** Rehearse defense presentation and live demo script (`demo_sample.py`).
+- [ ] **Task 6.3:** Conduct oral defense and submit camera-ready thesis documentation.
 
 ---
 
@@ -138,4 +91,4 @@
 ---
 
 ## 📝 Change Log & Milestone History
-* **2026-08-20:** Completed full technical flaws audit. Verified all 8 critical gaps resolved with 15/15 unit tests passing. Phase 1 (100%), Phase 3 (100%), Phase 2 (85%), and Phase 4 (75%) completed.
+* **2026-08-20:** Created `download_demos.py` CLI and `src/data/demo_downloader.py` supporting Faceit Open API, direct URLs, and archive decompression (.gz, .bz2, .zip, .tar.gz). 18/18 unit tests passing.
