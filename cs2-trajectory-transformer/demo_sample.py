@@ -73,12 +73,13 @@ def main():
     model.eval()
     
     with torch.no_grad():
-        aimbot_prob, predicted_elo = model(input_tensor)
+        aimbot_prob, smurf_embedding, predicted_elo = model(input_tensor)
         
     print("\n" + "=" * 65)
     print("MODEL INFERENCE RESULTS:")
     print("=" * 65)
     print(f"  > Aimbot Probability (Organic vs Algorithmic): {aimbot_prob.item()*100:.2f}%")
+    print(f"  > Smurf Latent Embedding Shape (InfoNCE): {smurf_embedding.shape} (L2 Norm: {torch.norm(smurf_embedding).item():.2f})")
     print(f"  > Predicted Player Skill ELO: {predicted_elo.item() * 2000:.0f} ELO")
     print("=" * 65)
     print("Verification Successful! Biomechanical extraction & ST-Trans are synchronized.")
