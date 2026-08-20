@@ -28,6 +28,12 @@ def preprocess_df(df: pd.DataFrame, feature_cols: list) -> torch.Tensor:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Live ST-Trans Inference & Trajectory Evaluation")
+    parser.add_argument("--file", type=str, default=None, help="Path to a real .parquet trajectory segment to test")
+    parser.add_argument("--model_path", type=str, default="models/checkpoints/best_model.pt", help="Path to checkpoint")
+    args = parser.parse_args()
+
     print("=" * 75)
     print("  CS2 TRAJECTORY TRANSFORMER // LIVE DUAL-HEAD INFERENCE DEMO")
     print("=" * 75)
@@ -42,12 +48,12 @@ def main():
         feature_dim=len(feature_cols), 
         d_model=64, 
         nhead=4, 
-        num_layers=3, 
+        num_layers=4, 
         embed_dim=32,
         dim_feedforward=256
     )
     
-    ckpt_path = "models/checkpoints/best_model.pt"
+    ckpt_path = args.model_path
     if os.path.exists(ckpt_path):
         weights = torch.load(ckpt_path, map_location="cpu")
         model.load_state_dict(weights)
@@ -56,6 +62,30 @@ def main():
         print(f"[!] Warning: No checkpoint found at {ckpt_path}. Running with random weights.")
         
     model.eval()
+
+    # Custom real Parquet evaluation
+    if args.file and os.path.exists(args.file):
+        print("\n" + "-" * 75)
+        print(f"  [TEST] EVALUATING REAL TRAJECTORY FILE: {os.path.basename(args.file)}")
+        print("-" * 75)
+        df = pd.read_parquet(args.file)
+        raw_array = df[feature_cols].values.astype(np.float32)
+        mean = np.mean(raw_array, axis=0, keepdims=True)
+        std = np.std(raw_array, axis=0, keepdims=True) + 1e-6
+        norm_array = (raw_array - mean) / std
+        input_tensor = torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0)
+
+        with torch.no_grad():
+            aim_prob, emb, elo_pred = model(input_tensor)
+
+        verdict = "[AIMBOT DETECTED]" if aim_prob.item() >= 0.5 else "[CLEAN ORGANIC HUMAN]"
+        print(f"  > Match / Segment:             {os.path.basename(args.file)}")
+        print(f"  > Length of Engagement:        {len(df)} ticks ({len(df)/128.0:.2f} seconds)")
+        print(f"  > Aimbot Detection Probability: {aim_prob.item()*100:.2f}% (Verdict: {verdict})")
+        print(f"  > Biometric Latent Signature:   32-dim Vector (L2 Norm: {torch.norm(emb).item():.2f})")
+        print(f"  > Predicted Player Skill:       {elo_pred.item() * 2000:.0f} ELO")
+        print("=" * 75)
+        return
     
     # 2. Test Case A: Organic Human Player (Faceit Pro - 2600 ELO with 8-12Hz Hand Tremor)
     print("\n" + "-" * 75)
