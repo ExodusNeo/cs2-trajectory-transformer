@@ -1,4 +1,4 @@
-﻿"""
+"""
 End-to-End CS2 Match Analysis & Anti-Cheat / Smurf Auditing Tool.
 Analyzes any real CS2 .dem / .dem.zst replay and produces a complete
 player-by-player telemetry security report.
@@ -175,7 +175,7 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
             for st, et, score in p['Suspicious'][:3]:
                 print(f"    - Ticks {st:,} -> {et:,} (Duration: {et-st} ticks): {score:.1f}% Aimbot Confidence")
     else:
-        print("\n[✓] Zero high-risk aimbot anomalies detected across all engagement windows.")
+        print("\n[SUCCESS] Zero high-risk aimbot anomalies detected across all engagement windows.")
     print("=" * 80)
 
 
