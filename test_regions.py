@@ -1,6 +1,25 @@
-﻿import requests
+import os
+import sys
+import requests
 
-headers = {'Authorization': 'Bearer your_faceit_api_key_here'}
+
+def get_api_key():
+    for p in ['.env', 'cs2-trajectory-transformer/.env', os.path.join(os.path.dirname(__file__), '.env')]:
+        if os.path.exists(p):
+            with open(p, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        k, v = line.split('=', 1)
+                        os.environ.setdefault(k.strip(), v.strip())
+    key = os.environ.get('FACEIT_API_KEY')
+    if not key:
+        print("Error: FACEIT_API_KEY environment variable not set. Please create a .env file.")
+        sys.exit(1)
+    return key
+
+
+headers = {'Authorization': f'Bearer {get_api_key()}'}
 regions = ['US', 'NA', 'SA', 'SEA', 'OCE', 'EU']
 for r in regions:
     try:
