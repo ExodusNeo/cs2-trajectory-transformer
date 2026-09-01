@@ -12,7 +12,7 @@ if not os.path.exists(ckpt_path):
     exit(1)
 
 size_mb = os.path.getsize(ckpt_path) / (1024 * 1024)
-weights = torch.load(ckpt_path, map_location="cpu")
+weights = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
 print(f"[OK] Checkpoint File Found: {ckpt_path}")
 print(f"    - File Size: {size_mb:.2f} MB")

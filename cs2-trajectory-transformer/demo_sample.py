@@ -55,7 +55,7 @@ def main():
     
     ckpt_path = args.model_path
     if os.path.exists(ckpt_path):
-        weights = torch.load(ckpt_path, map_location="cpu")
+        weights = torch.load(ckpt_path, map_location="cpu", weights_only=True)
         model.load_state_dict(weights)
         print(f"[OK] Successfully loaded TRAINED weights from: {ckpt_path}")
     else:

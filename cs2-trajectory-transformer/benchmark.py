@@ -85,7 +85,7 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
             torch.save(model.state_dict(), "models/checkpoints/best_model.pt")
             
     # Load best checkpoint
-    model.load_state_dict(torch.load("models/checkpoints/best_model.pt"))
+    model.load_state_dict(torch.load("models/checkpoints/best_model.pt", weights_only=True))
     return model
 
 

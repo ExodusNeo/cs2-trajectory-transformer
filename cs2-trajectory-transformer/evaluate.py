@@ -112,7 +112,7 @@ def main():
         dim_feedforward=256
     ).to(device)
     if os.path.exists(args.model_path):
-        checkpoint = torch.load(args.model_path, map_location=device)
+        checkpoint = torch.load(args.model_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint)
         print("[*] Successfully loaded checkpoint weights.")
     else:

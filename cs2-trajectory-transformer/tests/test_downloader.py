@@ -75,3 +75,30 @@ def test_inventory_listing(temp_downloader):
     assert len(inv['clean']) == 1
     assert len(inv['cheaters']) == 1
     assert inv['total'] == 2
+
+
+def test_zip_slip_protection(temp_downloader):
+    downloader, temp_dir = temp_downloader
+    dummy_content = b"MALICIOUS_SLIP_CONTENT"
+    
+    # Create a zip containing a path traversal entry
+    zip_path = os.path.join(temp_dir, "traversal_pack.zip")
+    with zipfile.ZipFile(zip_path, 'w') as zf:
+        zf.writestr("../../escape.dem", dummy_content)
+        zf.writestr("subfolder/nested.dem", dummy_content)
+        
+    extracted = downloader.decompress_archive(zip_path, downloader.clean_dir)
+    
+    # Verify all extracted files remain strictly inside clean_dir
+    assert len(extracted) == 2
+    for dem in extracted:
+        assert os.path.dirname(os.path.abspath(dem)) == os.path.abspath(downloader.clean_dir)
+        assert os.path.exists(dem)
+
+
+def test_download_url_https_validation(temp_downloader):
+    downloader, _ = temp_downloader
+    insecure_url = "http://insecure-cdn.example.com/match.dem.zst"
+    result = downloader.download_url(insecure_url)
+    assert result == []
+

@@ -117,15 +117,29 @@ class CS2ReplayDownloader:
                 with zipfile.ZipFile(file_path, 'r') as zip_ref:
                     for member in zip_ref.namelist():
                         if member.lower().endswith('.dem'):
-                            zip_ref.extract(member, destination_dir)
-                            extracted_dems.append(os.path.join(destination_dir, member))
+                            # Prevent Zip Slip directory traversal attacks
+                            safe_name = os.path.basename(member)
+                            if not safe_name:
+                                continue
+                            out_path = os.path.join(destination_dir, safe_name)
+                            with zip_ref.open(member) as source, open(out_path, 'wb') as target:
+                                target.write(source.read())
+                            extracted_dems.append(out_path)
 
             elif file_path.endswith('.tar.gz') or ext == '.tar':
                 with tarfile.open(file_path, 'r:*') as tar_ref:
                     for member in tar_ref.getmembers():
                         if member.name.lower().endswith('.dem'):
-                            tar_ref.extract(member, destination_dir)
-                            extracted_dems.append(os.path.join(destination_dir, member.name))
+                            # Prevent Tar Slip directory traversal attacks
+                            safe_name = os.path.basename(member.name)
+                            if not safe_name:
+                                continue
+                            out_path = os.path.join(destination_dir, safe_name)
+                            extracted_file = tar_ref.extractfile(member)
+                            if extracted_file:
+                                with open(out_path, 'wb') as target:
+                                    target.write(extracted_file.read())
+                                extracted_dems.append(out_path)
 
             elif ext == '.dem':
                 extracted_dems.append(file_path)
@@ -147,6 +161,10 @@ class CS2ReplayDownloader:
         Downloads a match replay archive from direct Backblaze CDN with progress bar,
         decompresses it, and automatically purges the compressed archive to save drive space.
         """
+        if not url.lower().startswith("https://"):
+            logging.error(f"Insecure or invalid URL scheme rejected: {url}. Only HTTPS URLs are allowed.")
+            return []
+
         target_dir = self.cheater_dir if is_cheater else self.clean_dir
         bname = custom_filename or url.split('/')[-1].split('?')[0]
         if not bname:

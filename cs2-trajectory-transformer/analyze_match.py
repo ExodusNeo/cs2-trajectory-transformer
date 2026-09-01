@@ -42,7 +42,7 @@ def load_st_transformer(checkpoint_path: str, device: torch.device):
     ).to(device)
 
     if os.path.exists(checkpoint_path):
-        weights = torch.load(checkpoint_path, map_location=device)
+        weights = torch.load(checkpoint_path, map_location=device, weights_only=True)
         model.load_state_dict(weights)
     model.eval()
     return model
