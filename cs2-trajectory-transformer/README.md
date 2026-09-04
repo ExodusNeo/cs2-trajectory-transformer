@@ -79,3 +79,24 @@ pytest tests/
 # Run end-to-end pipeline verification
 python demo_sample.py
 ```
+
+---
+
+## 📥 Data Ingestion & Cheater Replay Harvesting
+
+To populate clean and cheater datasets for training:
+
+```bash
+# 1. Multi-Tier Clean Matches (Beginner to Pro):
+python crawl_replays.py --auto --tier all --count 12
+
+# 2. Confirmed Banned Cheaters (Verified via official FACEIT API /bans):
+python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_player 1
+
+# 3. Automated Match Spider (Auto-scan lobbies for active cheaters):
+python crawl_replays.py --scan_cheaters --count 5
+
+# 4. Train ST-Trans Dual-Head Model:
+python train.py --data_dir data/processed_parquet --epochs 50 --batch_size 32
+```
+

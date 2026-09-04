@@ -113,9 +113,9 @@ def collate_trajectory_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, 
 
 def create_partitioned_dataloaders(
     data_dir: str,
-    train_ratio: float = 0.70,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
+    train_ratio: float = 0.80,
+    val_ratio: float = 0.10,
+    test_ratio: float = 0.10,
     batch_size: int = 32,
     seed: int = 42
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:

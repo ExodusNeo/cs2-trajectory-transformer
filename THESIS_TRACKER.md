@@ -94,7 +94,7 @@
 
 ### September 2026: Data Ingestion & Batch Store (2,000 Matches) (100% COMPLETED)
 - [x] **Task 2.1:** Automated Faceit Open API & HLTV Multi-Tier Scraper in `src/data/demo_downloader.py` and `crawl_replays.py` CLI (supporting Beginner [L1-3], Intermediate [L4-6], Advanced [L7-8], and Pro [L9-10] with .dem.zst Backblaze stream & auto-decompression).
-- [x] **Task 2.2:** Ingest clean demos (Faceit Level 10 Pro / FPL) + cheater dataset (Faceit Ban Registry & High-Fidelity Synthetic Benchmark Suite).
+- [x] **Task 2.2:** Ingest clean demos (Faceit Level 10 Pro / FPL) + cheater dataset (Faceit Ban Registry & High-Fidelity Synthetic Benchmark Suite). Enhanced with official API ban verification (`GET /players/{id}/bans`), pre-ban timestamp filtering, and automated lobby spider.
 - [x] **Task 2.3:** Run multi-threaded `src/data/batch_processor.py` to extract ATW Parquet telemetry stores (Verified: 879 ATWs extracted & validated with PyTorch DataLoader).
 - [x] **Task 2.4:** Generate zero-leakage Train/Validation/Test splits (80/10/10) partitioned strictly by Player/Match IDs.
 
@@ -136,6 +136,7 @@
 ---
 
 ## 📝 Change Log & Milestone History
+* **2026-09-04:** Implemented official FACEIT ban verification (`GET /players/{id}/bans`) and pre-ban match filtering (`match.finished_at <= ban.starts_at`) in `src/data/demo_downloader.py`. Added `--banned_file` and `--scan_cheaters` CLI options in `crawl_replays.py`. Calibrated `dataset.py` split default to 80/10/10, switched ELO loss to Smooth L1 (Eq 18), aligned model defaults to $d_{model}=128, H=8, d_{ff}=512$, added Spearman rank correlation to `evaluate.py`. Verified with 22/22 unit tests passing.
 * **2026-08-21:** Implemented multi-tier scraping across all 10 FACEIT skill tiers (`beginner` [L1-3], `intermediate` [L4-6], `advanced` [L7-8], `pro` [L9-10]) in `crawl_replays.py` with direct Backblaze CDN streaming and auto ATW extraction.
 * **2026-08-21:** Configured native PyTorch CUDA 13.2 for NVIDIA RTX 5060 on D: drive (`D:\cs2_thesis_env\`). Performed initial GPU training on real Level 10 FACEIT dataset (1,758 segments) and verified 0 false positives across 1.53M ticks in pro match audit. Phase 3 initiated.
 * **2026-08-20:** Master roadmap updated and synchronized with approved Thesis Concept Paper (Medel & Gutierrez, 2026). All 6 phases structured with targeted deadlines to ensure oral defense by mid-December 2026.

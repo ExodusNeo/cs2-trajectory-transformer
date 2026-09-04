@@ -31,18 +31,18 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
     """Trains the ST-Trans model with Focal Loss and Supervised InfoNCE."""
     model = STTrajectoryTransformer(
         feature_dim=8, 
-        d_model=64, 
-        nhead=4, 
-        num_layers=3, 
+        d_model=128, 
+        nhead=8, 
+        num_layers=4, 
         embed_dim=32,
-        dim_feedforward=256
+        dim_feedforward=512
     ).to(device)
     
     criterion_aim = FocalLoss(alpha=0.25, gamma=2.0)
     criterion_con = SupervisedInfoNCELoss(temperature=0.07)
-    criterion_elo = nn.MSELoss()
+    criterion_elo = nn.SmoothL1Loss()
     
-    optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
     
     best_auroc = 0.0

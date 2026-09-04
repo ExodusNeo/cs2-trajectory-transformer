@@ -90,6 +90,17 @@ def evaluate_model_on_loader(
     elo_mae = float(np.mean(np.abs(np.array(all_elo_preds) - np.array(all_elo_targets))))
     metrics['ELO_MAE'] = elo_mae
     
+    # Spearman's Rank Correlation (Table 8)
+    try:
+        from scipy.stats import spearmanr
+        if len(all_elo_preds) > 1 and len(set(all_elo_targets)) > 1:
+            corr, _ = spearmanr(all_elo_preds, all_elo_targets)
+            metrics['Spearman_Correlation'] = float(corr)
+        else:
+            metrics['Spearman_Correlation'] = 0.0
+    except Exception:
+        metrics['Spearman_Correlation'] = 0.0
+    
     return metrics, y_true, y_pred, embeddings
 
 
@@ -98,6 +109,9 @@ def main():
     parser.add_argument("--data_dir", type=str, default="data/processed_parquet", help="Directory containing Parquet files")
     parser.add_argument("--model_path", type=str, default="models/checkpoints/best_model.pt", help="Path to saved model checkpoint")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for evaluation")
+    parser.add_argument("--d_model", type=int, default=128, help="Transformer hidden dimension")
+    parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads")
+    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -106,10 +120,10 @@ def main():
     # Load model
     model = STTrajectoryTransformer(
         feature_dim=8, 
-        d_model=64, 
-        nhead=4, 
-        num_layers=4, 
-        dim_feedforward=256
+        d_model=args.d_model, 
+        nhead=args.nhead, 
+        num_layers=args.num_layers, 
+        dim_feedforward=args.d_model * 4
     ).to(device)
     if os.path.exists(args.model_path):
         checkpoint = torch.load(args.model_path, map_location=device, weights_only=True)

@@ -102,3 +102,66 @@ def test_download_url_https_validation(temp_downloader):
     result = downloader.download_url(insecure_url)
     assert result == []
 
+
+def test_cheating_ban_verification(monkeypatch, temp_downloader):
+    """Verify that is_banned_for_cheating identifies cheating bans while ignoring others."""
+    downloader, _ = temp_downloader
+
+    # Mock get_player_bans to return a cheating ban
+    monkeypatch.setattr(downloader, 'get_player_bans', lambda pid, api_key=None: [
+        {'reason': 'verbal abuse', 'starts_at': 1000},
+        {'reason': 'Cheating / Aimbot Detected', 'starts_at': 2000}
+    ])
+    
+    is_cheat, starts_at, reason = downloader.is_banned_for_cheating('test_player_1')
+    assert is_cheat is True
+    assert starts_at == 2000
+    assert 'Cheating' in reason
+
+    # Mock non-cheater player (e.g. only AFK or clean)
+    monkeypatch.setattr(downloader, 'get_player_bans', lambda pid, api_key=None: [
+        {'reason': 'leaving match', 'starts_at': 500}
+    ])
+    is_cheat, starts_at, reason = downloader.is_banned_for_cheating('test_player_2')
+    assert is_cheat is False
+    assert starts_at is None
+
+
+def test_pre_ban_match_filtering(monkeypatch, temp_downloader):
+    """Verify that pre-ban matches are selected based on match timestamps <= ban starts_at."""
+    downloader, _ = temp_downloader
+    ban_timestamp = 1700000000
+
+    monkeypatch.setattr(downloader, 'is_banned_for_cheating', lambda pid, api_key=None: (True, ban_timestamp, 'cheating'))
+    
+    # Mock player profile resolution
+    import json
+    fake_player_body = json.dumps({'player_id': 'pid_123', 'nickname': 'cheat_user'}).encode('utf-8')
+    
+    # Mock history: match 1 is after ban (e.g. unbanned or edge), match 2 is right before ban
+    fake_history_body = json.dumps({
+        'items': [
+            {'match_id': 'm_post_ban', 'started_at': ban_timestamp + 10000},
+            {'match_id': 'm_pre_ban', 'started_at': ban_timestamp - 1500, 'finished_at': ban_timestamp - 500}
+        ]
+    }).encode('utf-8')
+    
+    from data import demo_downloader
+    def mock_polite_request(req, max_retries=3, initial_delay=0.4):
+        url = req.full_url
+        if '/players?nickname=' in url:
+            return fake_player_body
+        elif '/history' in url:
+            return fake_history_body
+        return b""
+        
+    monkeypatch.setattr(demo_downloader, 'polite_request', mock_polite_request)
+    
+    downloaded_matches = []
+    monkeypatch.setattr(downloader, 'fetch_faceit_match_demo', lambda mid, api_key=None, is_cheater=True: [f"{mid}.dem"])
+    
+    dems = downloader.fetch_banned_cheater_matches(['cheat_user'], matches_per_player=1, verify_ban=True)
+    assert len(dems) == 1
+    assert dems[0] == "m_pre_ban.dem"
+
+

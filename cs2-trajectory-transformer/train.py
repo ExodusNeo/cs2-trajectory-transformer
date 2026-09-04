@@ -114,10 +114,11 @@ def main():
     parser.add_argument("--data_dir", type=str, default="data/processed_parquet", help="Directory with Parquet telemetry")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
-    parser.add_argument("--d_model", type=int, default=64, help="Transformer hidden dimension")
-    parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads")
-    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
+    parser.add_argument("--d_model", type=int, default=128, help="Transformer hidden dimension (default: 128)")
+    parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads (default: 8)")
+    parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers (default: 4)")
+    parser.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay coefficient (default: 1e-2)")
     parser.add_argument("--save_path", type=str, default="models/checkpoints/best_model.pt", help="Checkpoint save path")
     args = parser.parse_args()
 
@@ -137,12 +138,12 @@ def main():
         dim_feedforward=args.d_model * 4
     ).to(device)
 
-    # Loss functions & Optimizer
+    # Loss functions & Optimizer (Aligns with Chapter 3, Equations 15-18)
     criterion_aimbot = FocalLoss(alpha=0.25, gamma=2.0)
-    criterion_contrastive = SupervisedInfoNCELoss(temperature=0.1)
-    criterion_elo = nn.MSELoss()
+    criterion_contrastive = SupervisedInfoNCELoss(temperature=0.07)
+    criterion_elo = nn.SmoothL1Loss()
 
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2)
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)

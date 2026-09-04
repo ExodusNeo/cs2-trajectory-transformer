@@ -190,6 +190,9 @@ def main():
     parser.add_argument("--raw_dir", type=str, default=DEFAULT_RAW_DIR, help="Destination directory for raw .dem replays (D: drive)")
     parser.add_argument("--parquet_dir", type=str, default=DEFAULT_PARQUET_DIR, help="Destination directory for extracted ATW Parquet (D: drive)")
     parser.add_argument("--process_only", action="store_true", help="Skip download and run batch extraction on raw replays")
+    parser.add_argument("--banned_file", type=str, default=None, help="Text file containing suspected/banned player nicknames or SteamIDs")
+    parser.add_argument("--banned_players", nargs="+", default=None, help="List of banned player nicknames or SteamIDs to verify and crawl")
+    parser.add_argument("--scan_cheaters", action="store_true", default=False, help="Run automated Match Spider to scan lobbies for confirmed banned cheaters")
     parser.add_argument("--extract", action="store_true", default=True, help="Auto-extract ATW telemetry after downloading")
     parser.add_argument("--workers", type=int, default=4, help="Parallel worker processes for feature extraction")
     
@@ -215,14 +218,61 @@ def main():
 
     crawler = FaceitMatchCrawler(api_key=args.api_key, base_dir=args.raw_dir)
     downloaded_dems = []
+    is_cheater_crawl = False
 
-    # Mode A: User match list file
-    if args.match_list and os.path.exists(args.match_list):
+    # Mode A: Banned Cheater List Ingestion with Ban Verification
+    if args.banned_file or args.banned_players:
+        is_cheater_crawl = True
+        banned_pool = []
+        if args.banned_file and os.path.exists(args.banned_file):
+            with open(args.banned_file, "r", encoding="utf-8") as f:
+                banned_pool.extend([line.strip() for line in f if line.strip() and not line.startswith('#')])
+        if args.banned_players:
+            banned_pool.extend(args.banned_players)
+
+        print("=" * 65)
+        print("PHASE 2: CONFIRMED BANNED CHEATER INGESTION & BAN VERIFICATION")
+        print("=" * 65)
+        print(f"  Candidate Accounts: {len(banned_pool)}")
+        print(f"  API Verification:   ENABLED (GET /players/{{id}}/bans)")
+        print(f"  Destination:        {cheat_raw_path}")
+        print("=" * 65)
+        dems = downloader.fetch_banned_cheater_matches(
+            banned_steam_or_nicknames=banned_pool,
+            api_key=crawler.api_key,
+            matches_per_player=args.matches_per_player,
+            verify_ban=True
+        )
+        downloaded_dems.extend(dems)
+        print(f"\n[OK] Downloaded {len(downloaded_dems)} pre-ban cheater replay files into {cheat_raw_path}.")
+
+    # Mode B: Automated Match Spider / Ban Scanner
+    elif args.scan_cheaters:
+        is_cheater_crawl = True
+        print("=" * 65)
+        print("PHASE 2: AUTOMATED MATCH SPIDER & CHEATER BAN SCANNER")
+        print("=" * 65)
+        print(f"  Scanning recent match lobbies across skill tiers...")
+        print(f"  Target Confirmed Cheater Demos: {args.count}")
+        print("=" * 65)
+        # Gather candidate matches from recent tier pool
+        candidate_matches = crawler.crawl_tier_pool(tier="all", target_count=args.count * 4, matches_per_player=2)
+        dems = downloader.scan_matches_for_cheaters(
+            match_ids=candidate_matches,
+            api_key=crawler.api_key,
+            max_cheater_matches=args.count
+        )
+        downloaded_dems.extend(dems)
+        print(f"\n[OK] Spider scan complete! Found and downloaded {len(downloaded_dems)} verified cheater match replays.")
+
+    # Mode C: User match list file
+    elif args.match_list and os.path.exists(args.match_list):
         print(f"[*] Reading match list from: {args.match_list}")
         with open(args.match_list, "r", encoding="utf-8") as f:
             lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
             
         is_cheat = (args.label == 'cheater')
+        is_cheater_crawl = is_cheat
         for item in lines:
             if item.startswith("http://") or item.startswith("https://"):
                 dems = downloader.download_url(item, is_cheater=is_cheat)
@@ -230,7 +280,7 @@ def main():
                 dems = downloader.fetch_faceit_match_demo(item, api_key=crawler.api_key, is_cheater=is_cheat)
             downloaded_dems.extend(dems)
 
-    # Mode B: Specific players or Multi-Tier Auto Crawl
+    # Mode D: Specific players or Multi-Tier Auto Crawl (Clean)
     elif args.auto or args.players or crawler.api_key:
         print("=" * 65)
         print("PHASE 2: AUTOMATED MULTI-TIER CS2 REPLAY CRAWLER")
@@ -258,12 +308,14 @@ def main():
 
     else:
         print("=" * 65)
-        print("PHASE 2 CRAWLER STATUS")
+        print("PHASE 2 CRAWLER STATUS & USAGE")
         print("=" * 65)
-        print("To download real CS2 replays automatically across tiers to D: drive:")
-        print("  1. Ensure FACEIT_API_KEY is in your .env file")
-        print("  2. Run multi-tier crawl: python crawl_replays.py --auto --tier all --count 12")
-        print("  3. Or crawl a specific tier: python crawl_replays.py --tier beginner --count 5")
+        print("1. Clean Replays (Multi-Tier):")
+        print("   python crawl_replays.py --auto --tier all --count 12")
+        print("2. Confirmed Cheater Replays (from Banned Player List with Ban Verification):")
+        print("   python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_player 1")
+        print("3. Automated Match Spider (Scan Lobbies for Cheaters):")
+        print("   python crawl_replays.py --scan_cheaters --count 5")
         print("=" * 65)
 
     # Auto-extract ATW Telemetry Parquet if requested
@@ -271,8 +323,12 @@ def main():
         print("\n" + "=" * 65)
         print("AUTOMATED BATCH FEATURE EXTRACTION (ATW PARQUET)")
         print("=" * 65)
-        clean_ext = batch_process_demos(clean_raw_path, clean_parquet_path, is_cheater_dataset=False, max_workers=args.workers)
-        print(f"[OK] Batch Feature Extraction Complete! Total Clean Segments on D: drive: {clean_ext}")
+        if is_cheater_crawl:
+            cheat_ext = batch_process_demos(cheat_raw_path, cheat_parquet_path, is_cheater_dataset=True, max_workers=args.workers)
+            print(f"[OK] Batch Feature Extraction Complete! Total Cheater Segments on D: drive: {cheat_ext}")
+        else:
+            clean_ext = batch_process_demos(clean_raw_path, clean_parquet_path, is_cheater_dataset=False, max_workers=args.workers)
+            print(f"[OK] Batch Feature Extraction Complete! Total Clean Segments on D: drive: {clean_ext}")
 
 
 if __name__ == "__main__":

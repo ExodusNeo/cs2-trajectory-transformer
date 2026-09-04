@@ -252,46 +252,197 @@ class CS2ReplayDownloader:
             logging.error(f"Error parsing match payload for {match_id}: {e}")
             return []
 
+    def get_player_bans(self, player_id: str, api_key: Optional[str] = None) -> List[dict]:
+        """Queries the official Faceit API for a player's ban records."""
+        headers = {'User-Agent': 'CS2TrajectoryTransformer/1.0 (Thesis Research; Academic Ingestion)'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        ban_url = f"https://open.faceit.com/data/v4/players/{player_id}/bans"
+        req = urllib.request.Request(ban_url, headers=headers)
+        raw = polite_request(req, max_retries=3, initial_delay=0.3)
+        if not raw:
+            return []
+            
+        try:
+            ban_data = json.loads(raw.decode('utf-8'))
+            return ban_data.get('items', [])
+        except Exception as e:
+            logging.error(f"Error parsing bans for player {player_id}: {e}")
+            return []
+
+    def is_banned_for_cheating(self, player_id: str, api_key: Optional[str] = None) -> Tuple[bool, Optional[int], Optional[str]]:
+        """
+        Verifies whether a player account has an active or permanent ban for cheating.
+        Returns: (is_cheater_banned: bool, starts_at_timestamp: Optional[int], reason: Optional[str])
+        """
+        bans = self.get_player_bans(player_id, api_key=api_key)
+        for b in bans:
+            reason = str(b.get('reason', '')).lower()
+            # Faceit reasons: 'cheating', 'cheat', 'ban evasion', 'smurfing', etc.
+            if 'cheat' in reason or 'aim' in reason:
+                starts_at = b.get('starts_at')
+                logging.info(f"[CONFIRMED CHEATER] Player {player_id} has confirmed ban: reason='{b.get('reason')}', starts_at={starts_at}")
+                return True, starts_at, b.get('reason')
+        return False, None, None
+
     def fetch_banned_cheater_matches(
         self, 
         banned_steam_or_nicknames: List[str], 
         api_key: Optional[str] = None,
-        matches_per_player: int = 2
+        matches_per_player: int = 2,
+        verify_ban: bool = True
     ) -> List[str]:
-        """Queries Faceit API politely for confirmed banned cheaters and downloads their match replays."""
+        """
+        Queries Faceit API for banned cheaters, mathematically verifies their cheating ban,
+        identifies the match played right before the ban timestamp, and downloads the replay.
+        """
         headers = {'User-Agent': 'CS2TrajectoryTransformer/1.0 (Thesis Research; Academic Ingestion)'}
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
             
         all_downloaded = []
         for player in banned_steam_or_nicknames:
+            player = str(player).strip()
+            if not player or player.startswith('#'):
+                continue
+                
             try:
-                url = f"https://open.faceit.com/data/v4/players?nickname={player}"
+                # Support both SteamID64 (numeric) and Faceit Nicknames
+                if player.isdigit() and len(player) >= 16:
+                    url = f"https://open.faceit.com/data/v4/players?game_player_id={player}&game=cs2"
+                else:
+                    url = f"https://open.faceit.com/data/v4/players?nickname={player}"
+                    
                 req = urllib.request.Request(url, headers=headers)
-                raw = polite_request(req, max_retries=3, initial_delay=0.5)
+                raw = polite_request(req, max_retries=3, initial_delay=0.4)
                 if not raw:
+                    logging.warning(f"Could not resolve player '{player}' on Faceit.")
                     continue
+                    
                 p_data = json.loads(raw.decode('utf-8'))
                 p_id = p_data.get('player_id')
+                nickname = p_data.get('nickname', player)
                 if not p_id:
                     continue
                     
-                hist_url = f"https://open.faceit.com/data/v4/players/{p_id}/history?game=cs2&limit={matches_per_player}"
+                # 1. Verify ban status
+                starts_at_ts = None
+                if verify_ban:
+                    is_cheater, starts_at_ts, ban_reason = self.is_banned_for_cheating(p_id, api_key=api_key)
+                    if not is_cheater:
+                        logging.warning(f"Player '{nickname}' does not have an active cheating ban on record. Skipping.")
+                        continue
+                    logging.info(f"Verified cheating ban for '{nickname}' (Reason: {ban_reason})")
+                    
+                # 2. Fetch match history (reverse chronological order)
+                hist_url = f"https://open.faceit.com/data/v4/players/{p_id}/history?game=cs2&limit=10"
                 req2 = urllib.request.Request(hist_url, headers=headers)
-                raw_hist = polite_request(req2, max_retries=3, initial_delay=0.5)
+                raw_hist = polite_request(req2, max_retries=3, initial_delay=0.4)
                 if not raw_hist:
                     continue
+                    
                 hist_data = json.loads(raw_hist.decode('utf-8'))
                 items = hist_data.get('items', [])
-                for match in items:
-                    m_id = match.get('match_id')
-                    if m_id:
-                        dems = self.fetch_faceit_match_demo(m_id, api_key=api_key, is_cheater=True)
-                        all_downloaded.extend(dems)
+                
+                # 3. Select matches played before ban was enacted
+                target_matches = []
+                for m in items:
+                    m_id = m.get('match_id')
+                    s_at = m.get('started_at', 0)
+                    f_at = m.get('finished_at', s_at)
+                    
+                    if starts_at_ts is not None:
+                        # Allow up to 1-hour window if ban was issued shortly after match concluded
+                        if s_at <= (starts_at_ts + 3600):
+                            target_matches.append(m_id)
+                    else:
+                        target_matches.append(m_id)
+                        
+                    if len(target_matches) >= matches_per_player:
+                        break
+                        
+                # If no timestamp-filtered match found, take the most recent finished match
+                if not target_matches and items:
+                    target_matches.append(items[0].get('match_id'))
+                    
+                logging.info(f"Selected {len(target_matches)} pre-ban match(es) for cheater '{nickname}': {target_matches}")
+                for mid in target_matches:
+                    dems = self.fetch_faceit_match_demo(mid, api_key=api_key, is_cheater=True)
+                    all_downloaded.extend(dems)
+                    
             except Exception as e:
-                logging.error(f"Error querying banned account {player}: {e}")
+                logging.error(f"Error querying banned account '{player}': {e}")
                 
         return all_downloaded
+
+    def scan_matches_for_cheaters(
+        self, 
+        match_ids: List[str], 
+        api_key: Optional[str] = None,
+        max_cheater_matches: int = 5
+    ) -> List[str]:
+        """
+        Automated Match Spider / Ban Scanner:
+        Iterates through match lobbies, inspects all 10 players via GET /players/{id}/bans,
+        and automatically downloads the replay if any player in the match was banned for cheating.
+        """
+        headers = {'User-Agent': 'CS2TrajectoryTransformer/1.0 (Thesis Research; Academic Ingestion)'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        confirmed_cheater_dems = []
+        logging.info(f"[*] Scanning {len(match_ids)} match lobbies for confirmed banned cheaters...")
+        
+        for idx, mid in enumerate(match_ids, 1):
+            if len(confirmed_cheater_dems) >= max_cheater_matches:
+                break
+                
+            try:
+                # 1. Fetch match details
+                api_url = f"https://open.faceit.com/data/v4/matches/{mid}"
+                req = urllib.request.Request(api_url, headers=headers)
+                raw_body = polite_request(req, max_retries=2, initial_delay=0.3)
+                if not raw_body:
+                    continue
+                    
+                m_data = json.loads(raw_body.decode('utf-8'))
+                teams = m_data.get('teams', {})
+                players_to_check = []
+                
+                for t_name in ['faction1', 'faction2']:
+                    roster = teams.get(t_name, {}).get('roster', [])
+                    for p in roster:
+                        pid = p.get('player_id')
+                        p_nick = p.get('nickname')
+                        if pid:
+                            players_to_check.append((pid, p_nick))
+                            
+                # 2. Check each player's ban status
+                match_has_cheater = False
+                cheater_name = None
+                for pid, p_nick in players_to_check:
+                    is_cheater, _, reason = self.is_banned_for_cheating(pid, api_key=api_key)
+                    if is_cheater:
+                        match_has_cheater = True
+                        cheater_name = p_nick
+                        logging.info(f"[ALERT] Match {mid} contains confirmed banned cheater: '{cheater_name}' (Reason: {reason})")
+                        break
+                        
+                # 3. If match had a cheater, download demo
+                if match_has_cheater:
+                    demo_url = m_data.get('demo_url', [])
+                    if isinstance(demo_url, list) and len(demo_url) > 0:
+                        demo_url = demo_url[0]
+                    if demo_url:
+                        dems = self.download_url(demo_url, is_cheater=True, custom_filename=f"cheater_{cheater_name}_{mid}.dem.zst")
+                        confirmed_cheater_dems.extend(dems)
+                        logging.info(f"[+] Downloaded confirmed cheater replay: {dems}")
+                        
+            except Exception as e:
+                logging.error(f"Error scanning match {mid}: {e}")
+                
+        return confirmed_cheater_dems
 
     def list_downloaded_demos(self) -> Dict[str, List[str]]:
         """Returns inventory of all available .dem files on D: drive."""

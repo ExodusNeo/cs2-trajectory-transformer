@@ -38,9 +38,22 @@ setup_env.bat
 ```
 
 ### Step 2: Ingest CS2 `.dem` Replay Files
-Place downloaded 128-tick CS2 demo files into the data directories:
-* Clean baseline matches: `data/raw_demos/clean/*.dem`
-* Banned cheater matches: `data/raw_demos/cheaters/*.dem`
+Download or crawl 128-tick CS2 demo files into the data directories:
+* **Clean Multi-Tier Replays:**
+  ```bash
+  python crawl_replays.py --auto --tier all --count 12
+  ```
+* **Confirmed Banned Cheaters (Verified via `GET /players/{id}/bans`):**
+  ```bash
+  python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_player 1
+  ```
+* **Automated Match Lobby Spider (Auto-scan lobbies for active cheater bans):**
+  ```bash
+  python crawl_replays.py --scan_cheaters --count 5
+  ```
+* **Or Manual placement:**
+  * Clean baseline matches: `data/raw_demos/clean/*.dem`
+  * Banned cheater matches: `data/raw_demos/cheaters/*.dem`
 
 ### Step 3: Run Batch Preprocessing & ATW Feature Extraction
 ```bash
