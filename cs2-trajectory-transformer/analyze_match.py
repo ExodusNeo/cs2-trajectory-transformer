@@ -32,13 +32,14 @@ FEATURE_COLS = [
 
 
 def load_st_transformer(checkpoint_path: str, device: torch.device):
+    # Thesis Reference: Chapter 3, Table 6 (d_model=128, nhead=8, d_ff=512)
     model = STTrajectoryTransformer(
         feature_dim=len(FEATURE_COLS),
-        d_model=64,
-        nhead=4,
+        d_model=128,
+        nhead=8,
         num_layers=4,
         embed_dim=32,
-        dim_feedforward=256
+        dim_feedforward=512
     ).to(device)
 
     if os.path.exists(checkpoint_path):

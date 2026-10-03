@@ -117,10 +117,13 @@ def create_partitioned_dataloaders(
     val_ratio: float = 0.10,
     test_ratio: float = 0.10,
     batch_size: int = 32,
-    seed: int = 42
+    seed: int = 42,
+    feature_cols: Optional[List[str]] = None,
+    max_seq_len: int = 512
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Partitions dataset by unique SteamID / Match to strictly prevent data leakage.
+    Supports arbitrary feature subsets for ablation studies.
     """
     files = glob.glob(os.path.join(data_dir, "*.parquet"))
     if not files:
@@ -153,12 +156,13 @@ def create_partitioned_dataloaders(
     val_files = df_meta[df_meta['steamid'].isin(val_players)]['fpath'].tolist()
     test_files = df_meta[df_meta['steamid'].isin(test_players)]['fpath'].tolist()
     
-    train_ds = CS2TrajectoryDataset(train_files)
-    val_ds = CS2TrajectoryDataset(val_files)
-    test_ds = CS2TrajectoryDataset(test_files)
+    train_ds = CS2TrajectoryDataset(train_files, feature_cols=feature_cols, max_seq_len=max_seq_len)
+    val_ds = CS2TrajectoryDataset(val_files, feature_cols=feature_cols, max_seq_len=max_seq_len)
+    test_ds = CS2TrajectoryDataset(test_files, feature_cols=feature_cols, max_seq_len=max_seq_len)
     
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_trajectory_batch)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_trajectory_batch)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_trajectory_batch)
     
     return train_loader, val_loader, test_loader
+

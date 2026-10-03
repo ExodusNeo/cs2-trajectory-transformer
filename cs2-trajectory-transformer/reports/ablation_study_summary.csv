@@ -1,0 +1,7 @@
+,Channels,AUROC,AUPRC,Accuracy,F1-Score,FPR_at_95_TPR,ELO_MAE,Hypothesis
+Full ST-Trans (8 Channels),8,1.0,0.9999999999999999,81.11111111111111,0.6046511627906976,0.0,2297.52783203125,Complete model with all biomechanical & spherical invariants
+w/o 8-12 Hz Tremor PSD (7 Channels),7,1.0,0.9999999999999999,88.88888888888889,0.8,0.0,2566.220703125,Ablate neuromuscular tremor invariant (Eq 10)
+w/o Minimum Jerk (7 Channels),7,1.0,0.9999999999999999,95.55555555555556,0.9285714285714286,0.0,1865.8243408203125,Ablate Flash & Hogan third-derivative smoothness invariant (Eq 7)
+w/o Curvature & Tortuosity (6 Channels),6,1.0,0.9999999999999999,87.77777777777777,0.7755102040816326,0.0,2514.65185546875,"Ablate S^2 spherical geodesic manifold curvature & arc ratio (Eq 8, 9)"
+Kinematics Only (6 Channels),6,1.0,0.9999999999999999,66.66666666666666,0.0,0.0,2498.025634765625,Coordinate-invariant dynamics (zero map-positional bias)
+Raw Coordinates Only (2 Channels),2,0.525,0.44967669080148465,66.66666666666666,0.0,0.85,2530.924072265625,Unengineered transformer baseline without biomechanics

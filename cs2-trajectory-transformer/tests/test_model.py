@@ -89,3 +89,18 @@ def test_focal_loss():
     loss_hard = criterion(preds_hard, targets)
     
     assert loss_easy.item() < loss_hard.item(), "Focal loss should heavily penalize hard/uncertain errors over confident correct ones."
+
+
+def test_ablation_feature_dimensions():
+    """Verify ST-Trans handles ablated feature dimensions (2, 6, 7, 8 channels)."""
+    batch_size = 2
+    seq_len = 64
+    for f_dim in [2, 6, 7, 8]:
+        model = STTrajectoryTransformer(feature_dim=f_dim, d_model=32, nhead=2, num_layers=2)
+        x = torch.randn(batch_size, seq_len, f_dim)
+        mask = torch.ones(batch_size, seq_len, dtype=torch.bool)
+        aimbot_prob, smurf_emb, elo_pred = model(x, attention_mask=mask)
+        assert aimbot_prob.shape == (batch_size, 1)
+        assert smurf_emb.shape == (batch_size, 32)
+        assert elo_pred.shape == (batch_size, 1)
+
