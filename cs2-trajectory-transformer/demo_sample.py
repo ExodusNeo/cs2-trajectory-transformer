@@ -43,14 +43,14 @@ def main():
         'angular_jerk', 'trajectory_curvature', 'curvature_entropy', 'tremor_power_8_12hz'
     ]
     
-    # 1. Instantiate ST-Trans Architecture
+    # 1. Instantiate ST-Trans Architecture (Aligns with Chapter 3 Table 6)
     model = STTrajectoryTransformer(
         feature_dim=len(feature_cols), 
-        d_model=64, 
-        nhead=4, 
+        d_model=128, 
+        nhead=8, 
         num_layers=4, 
         embed_dim=32,
-        dim_feedforward=256
+        dim_feedforward=512
     )
     
     ckpt_path = args.model_path

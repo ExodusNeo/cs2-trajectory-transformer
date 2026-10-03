@@ -2,5 +2,5 @@
 "Spatial-Temporal Transformer (ST-Trans, Ours)",1.0,0.9999999999999999,100.0,1.0,0.0
 Bidirectional LSTM (Bi-LSTM),1.0,0.9999999999999999,100.0,1.0,0.0
 Gradient Boosting Classifier,1.0,1.0,100.0,1.0,0.0
-Random Forest Classifier,1.0,1.0,100.0,1.0,0.0
-Multi-Layer Perceptron (MLP),1.0,0.9999999999999999,100.0,1.0,0.0
+Random Forest Classifier,0.9999999999999999,1.0,100.0,1.0,0.0
+Multi-Layer Perceptron (MLP),1.0,1.0,100.0,1.0,0.0
