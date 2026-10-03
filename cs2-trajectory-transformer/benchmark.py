@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from scipy.stats import skew, kurtosis
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 from models.st_transformer import STTrajectoryTransformer
@@ -67,7 +68,9 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
             loss_con = criterion_con(emb, p_ids)
             loss_elo = criterion_elo(elo_pred, elo_labels)
             
-            loss = loss_aim + 0.4 * loss_con + 0.2 * loss_elo
+            # Thesis Reference: Chapter 3, Equation (14) — Multi-Task Composite Loss
+            # L_total = lambda_focal * L_aim + lambda_con * L_con + lambda_elo * L_elo
+            loss = loss_aim + 0.5 * loss_con + 0.2 * loss_elo
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -90,8 +93,8 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
 
 
 def train_and_eval_bilstm(train_loader, test_loader, epochs: int = 15, device: torch.device = None):
-    """Trains Bi-LSTM baseline."""
-    model = BiLSTMBaseline(feature_dim=8, hidden_dim=32, num_layers=2).to(device)
+    """Trains Bi-LSTM baseline (2 layers, hidden_dim=64, 128 bidirectional units per Table 7)."""
+    model = BiLSTMBaseline(feature_dim=8, hidden_dim=64, num_layers=2).to(device)
     criterion = nn.BCELoss()
     optimizer = AdamW(model.parameters(), lr=1e-3)
     
@@ -135,12 +138,16 @@ def train_and_eval_tabular_baselines(train_loader, test_loader):
                 valid = feats[i, masks[i]]
                 if len(valid) == 0:
                     continue
-                # Feature statistics (mean, std, max, min for all 8 dims = 32 tabular features)
+                # Thesis Reference: Chapter 3, Section 3.2.8 & Table 7 — Tabular Baselines Formulation
+                # 48 summary statistics across 8 channels: mean, std, max, min, skewness, kurtosis (6 * 8 = 48)
                 f_mean = np.mean(valid, axis=0)
                 f_std = np.std(valid, axis=0)
                 f_max = np.max(valid, axis=0)
                 f_min = np.min(valid, axis=0)
-                stat_vec = np.concatenate([f_mean, f_std, f_max, f_min])
+                f_skew = skew(valid, axis=0, nan_policy='omit')
+                f_kurt = kurtosis(valid, axis=0, nan_policy='omit')
+                stat_vec = np.concatenate([f_mean, f_std, f_max, f_min, f_skew, f_kurt])
+                stat_vec = np.nan_to_num(stat_vec, nan=0.0, posinf=0.0, neginf=0.0)
                 X_list.append(stat_vec)
                 y_list.append(labels[i])
         return np.array(X_list), np.array(y_list)

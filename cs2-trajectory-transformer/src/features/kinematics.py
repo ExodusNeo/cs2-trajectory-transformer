@@ -80,10 +80,12 @@ def compute_tremor_band_power(
     tremor_power = np.zeros(n, dtype=np.float32)
     half_w = window_size // 2
     
-    # Pre-calculate frequency bins for window size
+    # Thesis Reference: Chapter 3, Equation (10) — Physiological Tremor Band Power (TBP)
+    # TBP = (sum_{f=8}^{12} |X(f)|^2) / (sum_{f=1}^{30} |X(f)|^2 + eps)
+    # Relative to active voluntary motor bandwidth (1.0 to 30.0 Hz). Frequencies > 30Hz are sensor noise.
     freqs = np.fft.rfftfreq(window_size, d=1.0 / sampling_rate)
     tremor_mask = (freqs >= tremor_low) & (freqs <= tremor_high)
-    total_mask = (freqs >= 1.0)  # Filter out DC offset (< 1Hz)
+    total_mask = (freqs >= 1.0) & (freqs <= 30.0)  # Active voluntary motor bandwidth (1.0 - 30.0 Hz)
     
     hann = np.hanning(window_size)
     
