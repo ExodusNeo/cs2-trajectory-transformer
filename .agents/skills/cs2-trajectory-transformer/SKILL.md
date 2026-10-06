@@ -21,7 +21,7 @@ Whenever you enter a new conversation, execute this 30-second orientation sequen
    - Dedicated Python environment: `cs2-trajectory-transformer\venv\Scripts\python.exe` (or `D:\cs2_thesis_env`).
    - GPU: NVIDIA RTX with CUDA support.
 3. **Verify Baseline State:**
-   - Run tests: `& "cs2-trajectory-transformer\venv\Scripts\python.exe" -m pytest "cs2-trajectory-transformer\tests"` (All 22 tests must pass).
+   - Run tests: `& "cs2-trajectory-transformer\venv\Scripts\python.exe" -m pytest "cs2-trajectory-transformer\tests"` (All 24 tests must pass).
 4. **Inspect Master Roadmap:**
    - Check which Phase in [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) is currently active before proposing work.
 

@@ -5,7 +5,7 @@
 > **Adviser:** Vera Kim S. Tequin  
 > **Institution:** College of Information and Computing (CIC), University of Southeastern Philippines (USeP), Bo. Obrero, Davao City  
 > **Degree Program:** Bachelor of Science in Computer Science (Major in Data Science)  
-> **Academic Year:** 2026 | **Target Defense:** December 2026  
+> **Academic Year:** 2026–2027 | **Outline Defense:** November 2026 | **Target Final Defense:** May–June 2027 (2nd Semester)  
 > **Tracking Documentation:** [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) | [`POST_COMPLETION_GUIDE.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/POST_COMPLETION_GUIDE.md)
 
 ---
@@ -64,7 +64,7 @@ cs2-trajectory-transformer/
 │       ├── demo_downloader.py              <- FACEIT API polite scraper & archive decompressor
 │       └── batch_processor.py              <- Multiprocessing ATW Parquet extraction pipeline
 │
-├── tests/                                  <- Pytest automated test suite (22/22 verified passing)
+├── tests/                                  <- Pytest automated test suite (24/24 verified passing)
 │   ├── test_kinematics.py                  <- Euler wrapping, curvature, & tremor PSD unit tests
 │   ├── test_model.py                       <- ST-Trans forward pass, masks, & loss function tests
 │   ├── test_dataset.py                     <- Zero data leakage splits & batch collation tests
@@ -86,22 +86,22 @@ cs2-trajectory-transformer/
 
 - **Python Virtual Environment:**  
   Always use the dedicated virtual environment located at:  
-  `venv\Scripts\python.exe` (or `D:\cs2_thesis_env\Scripts\python.exe` if on the primary GPU workstation).
+  `cs2-trajectory-transformer\venv\Scripts\python.exe` (or `D:\cs2_thesis_env\Scripts\python.exe` if on the primary GPU workstation).
 - **Run Unit Tests:**
   ```powershell
-  & "venv\Scripts\python.exe" -m pytest "tests"
+  & "cs2-trajectory-transformer\venv\Scripts\python.exe" -m pytest "cs2-trajectory-transformer\tests"
   ```
 - **Train ST-Trans Model:**
   ```powershell
-  & "venv\Scripts\python.exe" "train.py" --data_dir "data/processed_parquet" --epochs 50 --batch_size 32
+  & "cs2-trajectory-transformer\venv\Scripts\python.exe" "cs2-trajectory-transformer\train.py" --data_dir "cs2-trajectory-transformer\data\processed_parquet" --epochs 50 --batch_size 32
   ```
 - **Run Evaluation:**
   ```powershell
-  & "venv\Scripts\python.exe" "evaluate.py" --data_dir "data/processed_parquet" --model_path "models/checkpoints/best_model.pt"
+  & "cs2-trajectory-transformer\venv\Scripts\python.exe" "cs2-trajectory-transformer\evaluate.py" --data_dir "cs2-trajectory-transformer\data\processed_parquet" --model_path "cs2-trajectory-transformer\models\checkpoints\best_model.pt"
   ```
 - **Run Comparative Benchmarks:**
   ```powershell
-  & "venv\Scripts\python.exe" "benchmark.py"
+  & "cs2-trajectory-transformer\venv\Scripts\python.exe" "cs2-trajectory-transformer\benchmark.py"
   ```
 
 ---
@@ -181,7 +181,7 @@ The following table documents the audited alignment between the approved thesis 
 | **5** | **Yaw & Pitch Feature Representation** | Channel 1: $\theta_{\text{yaw}} \in [-\pi, \pi]$ rad. Channel 2: $\theta_{\text{pitch}} \in [-\pi/2, \pi/2]$ rad. (Table 5) | `kinematics.py` converts to rad for derivatives; `dataset.py` standardizes per segment. | ℹ️ **Documented:** Linear scaling canceled by z-score standardization $\frac{x-\mu}{\sigma}$. Clarify in paper. |
 | **6** | **ATW Max Length Capping** | Capped at $L_{\max} = 512$ ticks ($\approx 4.0$ s). (Sec 3.2.3, Table 4) | PyTorch DataLoader enforces `max_seq_len = 512` truncation during batch collation. | ℹ️ **Documented:** Standard sequential transformer convention. Clarify DataLoader level in paper. |
 | **7** | **Zero-Leakage Split Guarantee** | Disjoint by both Player ID ($P_{\text{train}} \cap P_{\text{test}} = \emptyset$) AND Match ID ($M_{\text{train}} \cap M_{\text{test}} = \emptyset$). (Sec 3.2.7, Eq 18) | `dataset.py` partitions by unique `steamid`. | ℹ️ **Documented:** Prevents individual biometric memorization across train and test sets. |
-| **8** | **Thesis Manuscript Status** | Chapters 1–3 approved. Target defense Mid-December 2026. | Repo is currently in Phase 3 (Full-scale model training & tuning). | 🟢 **Aligned:** Follow [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) milestone schedule. |
+| **8** | **Thesis Manuscript Status** | Chapters 1–3 approved. Outline Defense: November 2026; Target Final Defense: May–June 2027. | Proposal Ch 1–3 updated with rolling buffer protocol. Preliminary benchmarks & ablations completed for Outline Defense; continuous rolling ingestion underway for final defense. | 🟢 **Aligned:** Follow [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) milestone schedule. |
 
 ---
 

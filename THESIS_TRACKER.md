@@ -3,66 +3,24 @@
 **Thesis Title:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers  
 **Authors:** Medel & Gutierrez  
 **Degree Program:** Bachelor of Science in Computer Science (Major in Data Science)  
-**Academic Year:** 2026  
-**Target Defense Date:** Mid-December 2026  
-**Last Updated:** August 21, 2026  
+**Academic Year:** 2026–2027  
+**Outline Defense Target:** November 2026 (1st Semester)  
+**Final Oral Defense Target:** May–June 2027 (2nd Semester)  
+**Last Updated:** October 6, 2026  
 **Post-Completion Guide:** See [POST_COMPLETION_GUIDE.md](POST_COMPLETION_GUIDE.md)  
 
 ---
 
-## 🚦 Master Timeline & Phase Overview (Target: Dec 2026)
+## 🚦 Master Timeline & Phase Overview (Target: June 2027)
 
 | Phase | Description | Target Window | Status | Completion % |
 | :--- | :--- | :--- | :---: | :---: |
-| **Phase 1** | Mathematical Foundations, 6 Features & ST-Trans Architecture | Aug 20 – Aug 21 | 🟢 COMPLETED | 100% |
-| **Phase 2** | Real Replay Ingestion & Scraper Pipeline | Aug 22 – Sep 30 | 🟢 COMPLETED | 100% |
-| **Phase 3** | Full-Scale GPU Training & InfoNCE Contrastive Tuning | Oct 01 – Oct 31 | 🟡 IN PROGRESS | 35% |
-| **Phase 4** | Comparative Benchmarks (XGBoost/BiLSTM), Ablation & Latency | Nov 01 – Nov 18 | ⚪ SCHEDULED | 0% |
-| **Phase 5** | Complete Thesis Manuscript Compilation (Chapters 1–5) | Nov 10 – Dec 05 | ⚪ SCHEDULED | 0% |
-| **Phase 6** | Slide Deck, Mock Rehearsals & Final Oral Defense | Dec 06 – Dec 20 | ⚪ SCHEDULED | 0% |
-
----
-
-## 🔍 Critical Technical Flaws Resolution Audit
-
-| # | Identified Critical Flaw / Gap | Resolution Implementation | Verification Test | Status |
-| :-: | :--- | :--- | :--- | :---: |
-| **1** | **Euler Angle Discontinuity:** Boundary jumps across $\pm 180^\circ$ caused false $358^\circ$ velocity/jerk spikes. | `wrap_angle_rad` using $((\Delta \theta + \pi) \pmod{2\pi}) - \pi$ in `src/features/kinematics.py`. | `tests/test_kinematics.py::test_euler_angle_wrapping` | 🟢 Verified Fixed |
-| **2** | **Ad-Hoc Planar Curvature Proxy:** 2D curvature formula invalid on spherical viewing coordinates. | True 3D geodesic sight vector cross product curvature $\kappa = \frac{\|\mathbf{v}' \times \mathbf{v}''\|}{\|\mathbf{v}'\|^3 + \epsilon}$ on unit sphere $S^2$. | `tests/test_kinematics.py::test_spherical_curvature_straight_vs_curved` | 🟢 Verified Fixed |
-| **3** | **Missing 8–12 Hz Tremor PSD:** Proposal claimed neuromuscular frequency extraction, but code lacked FFT. | `compute_tremor_band_power` using sliding-window Hanning-windowed FFT relative power in $[8, 12]$ Hz. | `tests/test_kinematics.py::test_tremor_band_power_detection` | 🟢 Verified Fixed |
-| **4** | **Replay Idle Walking Noise:** Analyzing entire 45-min matches diluted combat aimbot signals with 70%+ navigation noise. | Active Tracking Window (`src/data/atw_filter.py`) extracting $30^\circ$ enemy visual cones and $\pm 64$-tick combat event buffers. | `tests/test_parser.py::test_relative_fov_geometry` & `test_extract_active_tracking_windows` | 🟢 Verified Fixed |
-| **5** | **Lack of Contrastive Smurf Embedding:** Initial model only performed scalar regression without biometric latent clustering. | 32-dim unit-normalized projection head optimized via `SupervisedInfoNCELoss` in `src/models/losses.py`. | `tests/test_model.py::test_infonce_contrastive_loss` | 🟢 Verified Fixed |
-| **6** | **Aimbot Class Imbalance:** Sparse cheater engagement windows lead standard BCE to majority-class collapse. | Implemented `FocalLoss` ($\alpha=0.25, \gamma=2.0$) in `src/models/losses.py` down-weighting easy background samples. | `tests/test_model.py::test_focal_loss` | 🟢 Verified Fixed |
-| **7** | **Data Leakage in Splits:** Splitting randomly across ticks or rounds of the same player causes memorization. | `create_partitioned_dataloaders` enforcing pairwise disjoint player-ID and match-ID splits. | `tests/test_dataset.py::test_zero_data_leakage_splits` | 🟢 Verified Fixed |
-| **8** | **Variable Length Attention Distortion:** Padded zeros corrupted global temporal pooling. | Mask-aware temporal pooling and `src_key_padding_mask` attention in `src/models/st_transformer.py`. | `tests/test_dataset.py::test_batch_collate_and_masks` & `tests/test_model.py::test_st_transformer_forward_with_mask` | 🟢 Verified Fixed |
-
----
-
-## 📋 Month-by-Month Milestone Checklist
-
-### August 2026: Foundations & Verified Core Architecture (100% COMPLETED)
-# 📌 CS2 Trajectory Transformer — Thesis Master Tracker & Roadmap
-
-**Thesis Title:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers  
-**Authors:** Medel & Gutierrez  
-**Degree Program:** Bachelor of Science in Computer Science (Major in Data Science)  
-**Academic Year:** 2026  
-**Target Defense Date:** Mid-December 2026  
-**Last Updated:** August 21, 2026  
-**Post-Completion Guide:** See [POST_COMPLETION_GUIDE.md](POST_COMPLETION_GUIDE.md)  
-
----
-
-## 🚦 Master Timeline & Phase Overview (Target: Dec 2026)
-
-| Phase | Description | Target Window | Status | Completion % |
-| :--- | :--- | :--- | :---: | :---: |
-| **Phase 1** | Mathematical Foundations, 6 Features & ST-Trans Architecture | Aug 20 – Aug 21 | 🟢 COMPLETED | 100% |
-| **Phase 2** | Real Replay Ingestion & Scraper Pipeline | Aug 22 – Sep 30 | 🟢 COMPLETED | 100% |
-| **Phase 3** | Full-Scale GPU Training & InfoNCE Contrastive Tuning | Oct 01 – Oct 31 | 🟡 IN PROGRESS | 65% |
-| **Phase 4** | Comparative Benchmarks (XGBoost/BiLSTM), Ablation & Latency | Nov 01 – Nov 18 | 🟡 IN PROGRESS | 75% |
-| **Phase 5** | Complete Thesis Manuscript Compilation (Chapters 1–5) | Nov 10 – Dec 05 | ⚪ SCHEDULED | 20% |
-| **Phase 6** | Slide Deck, Mock Rehearsals & Final Oral Defense | Dec 06 – Dec 20 | 🟡 IN PROGRESS | 40% |
+| **Phase 1** | Mathematical Foundations, 8 Features & ST-Trans Architecture | Aug – Sep 2026 | 🟢 COMPLETED | 100% |
+| **Phase 2** | Real Replay Ingestion, Crawler & Autonomous Staging Buffer | Aug – Oct 2026 | 🟢 COMPLETED | 100% |
+| **Phase 3** | Baselines, Feature Ablations & Experimental Proofs | Oct 2026 | 🟢 COMPLETED | 100% |
+| **Phase 4** | Outline Defense Presentation & Proposal Examination | November 2026 | 🟡 IN PROGRESS | 85% |
+| **Phase 5** | Extended Rolling Dataset Accumulation & GPU Scale-Up | Dec 2026 – Mar 2027 | ⚪ SCHEDULED | 15% |
+| **Phase 6** | Final 5-Chapter Manuscript, ONNX Export & Final Oral Defense | Apr – June 2027 | ⚪ SCHEDULED | 10% |
 
 ---
 
