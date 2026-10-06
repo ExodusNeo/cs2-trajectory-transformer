@@ -79,8 +79,11 @@ class CS2ReplayDownloader:
         self.base_dir = base_dir or DEFAULT_STORAGE_DIR
         self.clean_dir = os.path.join(self.base_dir, "clean")
         self.cheater_dir = os.path.join(self.base_dir, "cheaters")
+        self.staging_dir = os.path.join(self.base_dir, "staging")
+        self.manifest_path = os.path.join(self.staging_dir, "staging_manifest.json")
         os.makedirs(self.clean_dir, exist_ok=True)
         os.makedirs(self.cheater_dir, exist_ok=True)
+        os.makedirs(self.staging_dir, exist_ok=True)
 
     def decompress_archive(self, file_path: str, destination_dir: str) -> List[str]:
         """
@@ -448,10 +451,190 @@ class CS2ReplayDownloader:
         """Returns inventory of all available .dem files on D: drive."""
         clean_dems = [os.path.join(self.clean_dir, f) for f in os.listdir(self.clean_dir) if f.endswith('.dem')]
         cheater_dems = [os.path.join(self.cheater_dir, f) for f in os.listdir(self.cheater_dir) if f.endswith('.dem')]
+        staged_dems = [os.path.join(self.staging_dir, f) for f in os.listdir(self.staging_dir) if f.endswith('.dem')] if os.path.exists(self.staging_dir) else []
         return {
             'clean': clean_dems,
             'cheaters': cheater_dems,
-            'total': len(clean_dems) + len(cheater_dems),
+            'staging': staged_dems,
+            'total': len(clean_dems) + len(cheater_dems) + len(staged_dems),
             'base_dir': self.base_dir
         }
+
+    def load_staging_manifest(self) -> Dict[str, dict]:
+        """Loads the current staging manifest JSON tracking candidate matches."""
+        if os.path.exists(self.manifest_path):
+            try:
+                with open(self.manifest_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logging.error(f"Error loading staging manifest: {e}")
+                return {}
+        return {}
+
+    def save_staging_manifest(self, manifest: Dict[str, dict]):
+        """Persists the staging manifest JSON."""
+        try:
+            with open(self.manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2)
+        except Exception as e:
+            logging.error(f"Error saving staging manifest: {e}")
+
+    def stage_match(self, match_id: str, api_key: Optional[str] = None) -> List[str]:
+        """
+        Stages a freshly completed match into local buffer storage before its 30-day CDN expiration.
+        Records match timestamp and player roster for deferred ban auditing.
+        """
+        headers = {'User-Agent': 'CS2TrajectoryTransformer/1.0 (Thesis Research; Academic Ingestion)'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+
+        manifest = self.load_staging_manifest()
+        if match_id in manifest and manifest[match_id].get('status') != 'error':
+            logging.info(f"Match {match_id} is already in staging (Status: {manifest[match_id].get('status')}). Skipping download.")
+            return []
+
+        try:
+            url = f"https://open.faceit.com/data/v4/matches/{match_id}"
+            req = urllib.request.Request(url, headers=headers)
+            raw = polite_request(req, max_retries=3, initial_delay=0.3)
+            if not raw:
+                return []
+
+            m_data = json.loads(raw.decode('utf-8'))
+            demo_url = m_data.get('demo_url', [])
+            if isinstance(demo_url, list) and len(demo_url) > 0:
+                demo_url = demo_url[0]
+
+            if not demo_url:
+                logging.warning(f"No demo_url found for match {match_id}.")
+                return []
+
+            # Extract 10 players
+            teams = m_data.get('teams', {})
+            players_roster = []
+            for t_name in ['faction1', 'faction2']:
+                roster = teams.get(t_name, {}).get('roster', [])
+                for p in roster:
+                    pid = p.get('player_id')
+                    p_nick = p.get('nickname')
+                    steam_id = p.get('game_player_id', '')
+                    if pid:
+                        players_roster.append({
+                            'player_id': pid,
+                            'nickname': p_nick,
+                            'steam_id': steam_id
+                        })
+
+            # Download into staging directory
+            bname = f"staging_{match_id}.dem.zst"
+            extracted_dems = self.download_url(demo_url, is_cheater=False, custom_filename=bname)
+            # Ensure moved into staging_dir
+            import shutil
+            staged_dems = []
+            for dem in extracted_dems:
+                dest = os.path.join(self.staging_dir, os.path.basename(dem))
+                if os.path.abspath(dem) != os.path.abspath(dest):
+                    shutil.move(dem, dest)
+                staged_dems.append(dest)
+
+            manifest[match_id] = {
+                'match_id': match_id,
+                'staged_at': int(time.time()),
+                'finished_at': m_data.get('finished_at', int(time.time())),
+                'demo_files': [os.path.basename(d) for d in staged_dems],
+                'players': players_roster,
+                'status': 'pending_audit',
+                'last_checked': int(time.time())
+            }
+            self.save_staging_manifest(manifest)
+            logging.info(f"[+] Successfully staged match {match_id} with {len(players_roster)} players tracked into {self.staging_dir}")
+            return staged_dems
+
+        except Exception as e:
+            logging.error(f"Error staging match {match_id}: {e}")
+            return []
+
+    def audit_staging(
+        self, 
+        api_key: Optional[str] = None, 
+        graduation_days: int = 21,
+        auto_extract: bool = False,
+        parquet_dir: Optional[str] = None,
+        max_workers: int = 4
+    ) -> Dict[str, int]:
+        """
+        Deferred Ban Auditor:
+        Examines all staged match candidates via GET /players/{id}/bans.
+        1. If ANY player has received a cheating ban: promotes match to cheaters/.
+        2. If match exceeds graduation_days with zero infractions: graduates match to clean/.
+        """
+        manifest = self.load_staging_manifest()
+        import shutil
+
+        stats = {'cheaters_detected': 0, 'clean_graduated': 0, 'pending': 0}
+        logging.info(f"[*] Auditing {len(manifest)} staged candidate matches in buffer...")
+
+        for mid, info in manifest.items():
+            if info.get('status') != 'pending_audit':
+                continue
+
+            demo_files = info.get('demo_files', [])
+            cheater_found = False
+            cheater_nickname = None
+            cheater_reason = None
+
+            # 1. Audit players in match
+            for p in info.get('players', []):
+                pid = p.get('player_id')
+                is_cheat, _, reason = self.is_banned_for_cheating(pid, api_key=api_key)
+                if is_cheat:
+                    cheater_found = True
+                    cheater_nickname = p.get('nickname')
+                    cheater_reason = reason
+                    break
+
+            if cheater_found:
+                logging.info(f"[CONFIRMED CHEATER DETECTED] Match {mid} has banned player '{cheater_nickname}'! Promoting to cheater corpus.")
+                for fname in demo_files:
+                    src = os.path.join(self.staging_dir, fname)
+                    dst = os.path.join(self.cheater_dir, fname)
+                    if os.path.exists(src):
+                        shutil.move(src, dst)
+
+                if auto_extract and parquet_dir:
+                    from data.batch_processor import batch_process_demos
+                    batch_process_demos(self.cheater_dir, os.path.join(parquet_dir, "cheaters"), is_cheater_dataset=True, max_workers=max_workers)
+
+                info['status'] = 'cheater_detected'
+                info['cheater'] = cheater_nickname
+                info['ban_reason'] = cheater_reason
+                stats['cheaters_detected'] += 1
+
+            else:
+                # 2. Check observation age
+                finished_at = info.get('finished_at', info.get('staged_at', time.time()))
+                days_elapsed = (time.time() - finished_at) / 86400.0
+
+                if days_elapsed >= graduation_days:
+                    logging.info(f"[GRADUATION] Match {mid} passed {days_elapsed:.1f} days without infractions. Promoting to clean baseline.")
+                    for fname in demo_files:
+                        src = os.path.join(self.staging_dir, fname)
+                        dst = os.path.join(self.clean_dir, fname)
+                        if os.path.exists(src):
+                            shutil.move(src, dst)
+
+                    if auto_extract and parquet_dir:
+                        from data.batch_processor import batch_process_demos
+                        batch_process_demos(self.clean_dir, os.path.join(parquet_dir, "clean"), is_cheater_dataset=False, max_workers=max_workers)
+
+                    info['status'] = 'clean_graduated'
+                    stats['clean_graduated'] += 1
+                else:
+                    info['last_checked'] = int(time.time())
+                    stats['pending'] += 1
+
+        self.save_staging_manifest(manifest)
+        logging.info(f"[OK] Staging audit complete: {stats['cheaters_detected']} cheaters promoted, {stats['clean_graduated']} clean graduated, {stats['pending']} still pending.")
+        return stats
+
 

@@ -191,8 +191,11 @@ def main():
     parser.add_argument("--parquet_dir", type=str, default=DEFAULT_PARQUET_DIR, help="Destination directory for extracted ATW Parquet (D: drive)")
     parser.add_argument("--process_only", action="store_true", help="Skip download and run batch extraction on raw replays")
     parser.add_argument("--banned_file", type=str, default=None, help="Text file containing suspected/banned player nicknames or SteamIDs")
-    parser.add_argument("--banned_players", nargs="+", default=None, help="List of banned player nicknames or SteamIDs to verify and crawl")
     parser.add_argument("--scan_cheaters", action="store_true", default=False, help="Run automated Match Spider to scan lobbies for confirmed banned cheaters")
+    parser.add_argument("--autonomous", action="store_true", default=False, help="Run fully autonomous ingestion: stages fresh matches and audits buffer for bans")
+    parser.add_argument("--stage_recent", action="store_true", default=False, help="Stage fresh matches (< 48h old) to buffer before 30-day CDN deletion")
+    parser.add_argument("--audit_staging", action="store_true", default=False, help="Audit staged matches against GET /players/{id}/bans and promote cheaters/clean")
+    parser.add_argument("--graduation_days", type=int, default=21, help="Days without cheating infractions before graduating staged match to clean (default: 21)")
     parser.add_argument("--extract", action="store_true", default=True, help="Auto-extract ATW telemetry after downloading")
     parser.add_argument("--workers", type=int, default=4, help="Parallel worker processes for feature extraction")
     
@@ -220,8 +223,51 @@ def main():
     downloaded_dems = []
     is_cheater_crawl = False
 
+    # Mode E: Fully Autonomous Rolling Ingestion & Deferred Ban Audit
+    if args.autonomous or args.stage_recent or args.audit_staging:
+        print("=" * 65)
+        print("PHASE 2: AUTONOMOUS ROLLING BUFFER & DEFERRED BAN AUDITOR")
+        print("=" * 65)
+        print(f"  Storage Target:    {args.raw_dir} (D: drive)")
+        print(f"  Staging Cache:     {downloader.staging_dir}")
+        print(f"  Graduation Window: {args.graduation_days} days without infraction")
+        print("=" * 65)
+
+        # 1. Stage fresh matches if requested
+        if args.autonomous or args.stage_recent:
+            print(f"\n[*] Harvesting fresh candidate matches across {args.tier.upper()} tier (Target: {args.count} matches)...")
+            fresh_matches = crawler.crawl_tier_pool(tier=args.tier, target_count=args.count, matches_per_player=args.matches_per_player)
+            print(f"[*] Found {len(fresh_matches)} candidate matches. Streaming .dem.zst to local staging buffer...")
+            staged_count = 0
+            for idx, mid in enumerate(fresh_matches, 1):
+                print(f"  [{idx}/{len(fresh_matches)}] Staging match {mid}...")
+                staged = downloader.stage_match(mid, api_key=crawler.api_key)
+                if staged:
+                    staged_count += 1
+            print(f"[OK] Buffered {staged_count} fresh replay files into {downloader.staging_dir} before 30-day CDN expiration.")
+
+        # 2. Audit existing staged matches for bans
+        if args.autonomous or args.audit_staging:
+            print(f"\n[*] Executing Deferred Ban Audit across all buffered matches...")
+            stats = downloader.audit_staging(
+                api_key=crawler.api_key,
+                graduation_days=args.graduation_days,
+                auto_extract=args.extract,
+                parquet_dir=args.parquet_dir,
+                max_workers=args.workers
+            )
+            print("\n" + "=" * 65)
+            print("AUTONOMOUS BUFFER AUDIT SUMMARY")
+            print("=" * 65)
+            print(f"  Confirmed Cheaters Detected: {stats['cheaters_detected']} (Promoted to cheaters/)")
+            print(f"  Clean Matches Graduated:     {stats['clean_graduated']} (Promoted to clean/)")
+            print(f"  Pending Ongoing Observation: {stats['pending']} (Awaiting ban maturation)")
+            print("=" * 65)
+        return
+
     # Mode A: Banned Cheater List Ingestion with Ban Verification
-    if args.banned_file or args.banned_players:
+    elif args.banned_file or args.banned_players:
+
         is_cheater_crawl = True
         banned_pool = []
         if args.banned_file and os.path.exists(args.banned_file):
@@ -310,11 +356,15 @@ def main():
         print("=" * 65)
         print("PHASE 2 CRAWLER STATUS & USAGE")
         print("=" * 65)
-        print("1. Clean Replays (Multi-Tier):")
+        print("1. Fully Autonomous Mode (Stages Fresh Matches & Audits Buffer for Bans):")
+        print("   python crawl_replays.py --autonomous --count 8")
+        print("2. Audit Staged Matches Only:")
+        print("   python crawl_replays.py --audit_staging")
+        print("3. Clean Replays (Multi-Tier Direct Ingestion):")
         print("   python crawl_replays.py --auto --tier all --count 12")
-        print("2. Confirmed Cheater Replays (from Banned Player List with Ban Verification):")
+        print("4. Confirmed Cheater Replays (from Banned List with Verification):")
         print("   python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_player 1")
-        print("3. Automated Match Spider (Scan Lobbies for Cheaters):")
+        print("5. Automated Match Spider (Scan Lobbies for Cheaters):")
         print("   python crawl_replays.py --scan_cheaters --count 5")
         print("=" * 65)
 

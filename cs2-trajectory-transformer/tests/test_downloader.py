@@ -165,3 +165,60 @@ def test_pre_ban_match_filtering(monkeypatch, temp_downloader):
     assert dems[0] == "m_pre_ban.dem"
 
 
+def test_staging_manifest_and_audit(temp_downloader, monkeypatch):
+    """Verify staging buffer manifest tracking and deferred ban promotion/graduation."""
+    import time
+    downloader, temp_dir = temp_downloader
+    
+    # 1. Create fake staged demo file
+    fake_demo = os.path.join(downloader.staging_dir, "test_staged.dem")
+    with open(fake_demo, "wb") as f:
+        f.write(b"HL2DEMO_STAGED")
+        
+    manifest = {
+        "match_cheat": {
+            "match_id": "match_cheat",
+            "staged_at": int(time.time()),
+            "finished_at": int(time.time()),
+            "demo_files": ["test_staged.dem"],
+            "players": [{"player_id": "p_cheat", "nickname": "cheater1"}],
+            "status": "pending_audit"
+        },
+        "match_clean": {
+            "match_id": "match_clean",
+            "staged_at": int(time.time() - 25 * 86400),  # 25 days old
+            "finished_at": int(time.time() - 25 * 86400),
+            "demo_files": ["test_clean.dem"],
+            "players": [{"player_id": "p_clean", "nickname": "clean1"}],
+            "status": "pending_audit"
+        }
+    }
+    # Create fake clean staged demo
+    with open(os.path.join(downloader.staging_dir, "test_clean.dem"), "wb") as f:
+        f.write(b"HL2DEMO_CLEAN")
+        
+    downloader.save_staging_manifest(manifest)
+    
+    # Mock ban check: p_cheat is banned, p_clean is clean
+    def mock_is_banned(pid, api_key=None):
+        if pid == "p_cheat":
+            return True, int(time.time()), "cheating"
+        return False, None, None
+        
+    monkeypatch.setattr(downloader, 'is_banned_for_cheating', mock_is_banned)
+    
+    stats = downloader.audit_staging(graduation_days=21, auto_extract=False)
+    
+    assert stats['cheaters_detected'] == 1
+    assert stats['clean_graduated'] == 1
+    
+    # Check that demo files were moved to appropriate folders
+    assert os.path.exists(os.path.join(downloader.cheater_dir, "test_staged.dem"))
+    assert os.path.exists(os.path.join(downloader.clean_dir, "test_clean.dem"))
+    
+    updated_manifest = downloader.load_staging_manifest()
+    assert updated_manifest["match_cheat"]["status"] == "cheater_detected"
+    assert updated_manifest["match_clean"]["status"] == "clean_graduated"
+
+
+
