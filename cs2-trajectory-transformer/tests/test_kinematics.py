@@ -71,18 +71,24 @@ def test_tremor_band_power_static_view_guard():
 
 
 def test_spherical_curvature_straight_vs_curved():
-    """Verify spherical curvature on straight vs circular trajectory on unit sphere."""
-    fs = 128.0
+    """Verify spherical geodesic curvature on straight (great-circle) vs non-geodesic curved trajectory."""
+    fs = 64.0
     n = 128
     t = np.arange(n) / fs
     
-    # Straight horizontal trajectory: pitch = 0, yaw = linear
+    # 1. Straight horizontal trajectory (great circle on S^2): pitch = 0, yaw = linear
     pitch_straight = np.zeros(n)
     yaw_straight = 0.5 * t
     curv_straight = compute_spherical_curvature(pitch_straight, yaw_straight, dt=1.0/fs)
     
     # Great circle has 0 geodesic curvature on unit sphere
-    assert np.all(curv_straight[5:-5] < 1.0), "Straight trajectory should have near-zero geodesic curvature"
+    assert np.all(curv_straight[5:-5] < 0.01), f"Great circle should have near-zero geodesic curvature, max was {np.max(curv_straight[5:-5])}"
+    
+    # 2. Non-geodesic curved path (sinusoidal deviation from great-circle plane)
+    pitch_curved = 0.2 * np.sin(2 * np.pi * 2.0 * t)
+    yaw_curved = 0.5 * t
+    curv_curved = compute_spherical_curvature(pitch_curved, yaw_curved, dt=1.0/fs)
+    assert np.mean(curv_curved[10:-10]) > 0.05, "Curved trajectory should exhibit measurable geodesic curvature"
 
 
 def test_compute_kinematic_features_dataframe():

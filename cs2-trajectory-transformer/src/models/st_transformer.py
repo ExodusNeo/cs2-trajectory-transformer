@@ -180,18 +180,36 @@ class SmurfDetector:
             severity = "RANK_ALIGNED"
 
         centroid_similarities = {}
-        if player_embedding is not None and tier_centroids is not None:
+        closest_tier = None
+        biometric_mismatch = False
+        if player_embedding is not None and tier_centroids is not None and len(tier_centroids) > 0:
             norm_emb = player_embedding / (np.linalg.norm(player_embedding) + 1e-6)
             for tier_name, centroid in tier_centroids.items():
                 norm_c = centroid / (np.linalg.norm(centroid) + 1e-6)
                 sim = float(np.dot(norm_emb, norm_c))
                 centroid_similarities[tier_name] = sim
+            closest_tier = max(centroid_similarities, key=centroid_similarities.get)
+            
+            # Map reported elo to tier name to verify biometric agreement
+            tier_order = {'BEGINNER': 1, 'NOVICE': 1, 'INTERMEDIATE': 2, 'ADVANCED': 3, 'ELITE': 4, 'PRO': 4}
+            nominal_tier = 'NOVICE' if reported_elo < 1000 else ('INTERMEDIATE' if reported_elo < 1500 else ('ADVANCED' if reported_elo < 2000 else 'PRO'))
+            c_key = closest_tier.upper()
+            if c_key in tier_order and nominal_tier in tier_order:
+                if tier_order[c_key] > tier_order[nominal_tier]:
+                    biometric_mismatch = True
+
+        # Dual-criterion flag: flags if ELO discrepancy exceeds threshold,
+        # or moderate discrepancy (>=250 ELO) supported by biometric tier mismatch
+        is_smurf = (delta_elo >= self.threshold_elo) or (delta_elo >= 250.0 and biometric_mismatch)
 
         return {
             'predicted_elo': float(predicted_elo),
             'reported_elo': float(reported_elo),
             'delta_elo': delta_elo,
-            'is_smurf': is_smurf,
+            'is_smurf': bool(is_smurf),
             'discrepancy_tier': severity,
+            'closest_tier': closest_tier,
+            'biometric_mismatch': biometric_mismatch,
             'centroid_similarities': centroid_similarities
         }
+

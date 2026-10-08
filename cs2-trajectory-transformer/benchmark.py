@@ -79,7 +79,7 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
         scheduler.step()
         
         # Validation
-        val_metrics, _, _, _ = evaluate_model_on_loader(model, val_loader, device)
+        val_metrics, *rest = evaluate_model_on_loader(model, val_loader, device)
         logging.info(f"Epoch {epoch:02d}/{epochs:02d} | Train Loss: {total_loss/len(train_loader):.4f} | Val AUROC: {val_metrics['AUROC']:.4f} | Val Acc: {val_metrics['Accuracy']*100:.1f}%")
         
         if val_metrics['AUROC'] >= best_auroc:
@@ -126,7 +126,7 @@ def train_and_eval_bilstm(train_loader, test_loader, epochs: int = 15, device: t
 
 
 def train_and_eval_tabular_baselines(train_loader, test_loader):
-    """Extracts statistical summary features to train Random Forest, Gradient Boosting, and MLP."""
+    """Extracts statistical summary features to train Random Forest, XGBoost / GB, and MLP."""
     def extract_tabular(loader):
         X_list, y_list = [], []
         for batch in loader:
@@ -181,19 +181,20 @@ def run_full_benchmark():
     
     # 1. Train & Evaluate ST-Trans
     st_model = train_st_transformer(train_loader, val_loader, epochs=15, device=device)
-    st_metrics, y_test, y_pred, embeddings = evaluate_model_on_loader(st_model, test_loader, device)
+    st_metrics, y_test, y_pred, embeddings, player_ids = evaluate_model_on_loader(st_model, test_loader, device)
     
     # 2. Train & Evaluate Bi-LSTM Baseline
     lstm_metrics = train_and_eval_bilstm(train_loader, test_loader, epochs=15, device=device)
     
-    # 3. Train & Evaluate Tabular Baselines (RF, Gradient Boosting, MLP)
+    # 3. Train & Evaluate Tabular Baselines (RF, XGBoost / GB, MLP)
     tabular_results = train_and_eval_tabular_baselines(train_loader, test_loader)
     
     # 4. Compile Comparison Table
+    boost_key = 'XGBoost' if 'XGBoost' in tabular_results else 'Gradient Boosting'
     all_results = {
         'Spatial-Temporal Transformer (ST-Trans, Ours)': st_metrics,
         'Bidirectional LSTM (Bi-LSTM)': lstm_metrics,
-        'Gradient Boosting Classifier': tabular_results['Gradient Boosting'],
+        f'{boost_key} Classifier': tabular_results[boost_key],
         'Random Forest Classifier': tabular_results['Random Forest'],
         'Multi-Layer Perceptron (MLP)': tabular_results['MLP']
     }
@@ -214,11 +215,18 @@ def run_full_benchmark():
     # 5. Generate Publication Plots
     plot_roc_pr_curves(y_test, y_pred, save_path="reports/roc_pr_curve.png")
     
-    # Extract labels for t-SNE
-    test_labels = y_test
-    label_map = {0: 'Clean Human Motor Aim', 1: 'Algorithmic / DMA Aimbot'}
-    plot_tsne_embeddings(embeddings, test_labels, label_names=label_map, save_path="reports/tsne_latent_space.png")
+    # Dual t-SNE Embeddings:
+    # (a) Aimbot vs Clean separation
+    label_map_aim = {0: 'Clean Human Motor Aim', 1: 'Algorithmic / DMA Aimbot'}
+    plot_tsne_embeddings(embeddings, y_test, label_names=label_map_aim, save_path="reports/tsne_aimbot_space.png")
     
+    # (b) Biometric Latent Player Profiling (InfoNCE clustering)
+    if len(player_ids) > 0 and len(np.unique(player_ids)) > 1:
+        unique_p = {pid: f"Player {pid % 1000}" for pid in np.unique(player_ids)}
+        plot_tsne_embeddings(embeddings, player_ids, label_names=unique_p, save_path="reports/tsne_latent_space.png")
+    else:
+        plot_tsne_embeddings(embeddings, y_test, label_names=label_map_aim, save_path="reports/tsne_latent_space.png")
+        
     logging.info("Benchmark complete! Figures and tables saved in reports/.")
 
 

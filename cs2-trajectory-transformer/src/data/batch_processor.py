@@ -9,7 +9,7 @@ import glob
 import logging
 import numpy as np
 import pandas as pd
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union, Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from .demo_parser import CS2DemoParser
@@ -82,31 +82,46 @@ def process_single_demo(
                             event_ticks_by_player[s_str] = set()
                         event_ticks_by_player[s_str].update(grp['tick'].dropna().astype(int).tolist())
         
-        # Load external banned steamid manifest if banned_set is empty
-        if not banned_set:
-            for candidate_path in [
-                os.path.join(os.path.dirname(demo_path), "banned_steamids.json"),
-                os.path.join(os.path.dirname(demo_path), "..", "banned_steamids.json"),
-                os.path.join("data", "banned_steamids.json"),
-                os.path.join("data", "staging_manifest.json")
-            ]:
-                if os.path.exists(candidate_path):
-                    try:
-                        import json
-                        with open(candidate_path, 'r') as f:
-                            data = json.load(f)
-                        if isinstance(data, list):
+        # Load external banned steamid and ELO manifests if needed
+        discovered_elos = {}
+        manifest_paths = [
+            os.path.join(os.path.dirname(demo_path), "banned_steamids.json"),
+            os.path.join(os.path.dirname(demo_path), "..", "banned_steamids.json"),
+            os.path.join("data", "banned_steamids.json"),
+            os.path.join("data", "staging_manifest.json"),
+            os.path.join("data", "raw_demos", "staging", "staging_manifest.json"),
+            os.path.join("data", "raw_demos", "staging_manifest.json"),
+            os.path.join(os.path.dirname(demo_path), "..", "staging", "staging_manifest.json"),
+            os.path.join("data", "player_elos.json")
+        ]
+        for candidate_path in manifest_paths:
+            if os.path.exists(candidate_path):
+                try:
+                    import json
+                    with open(candidate_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        if not banned_set:
                             banned_set.update(str(x) for x in data)
-                        elif isinstance(data, dict):
-                            for k, v in data.items():
-                                if isinstance(v, dict) and 'players' in v:
-                                    for p in v.get('players', []):
+                    elif isinstance(data, dict):
+                        for k, v in data.items():
+                            if isinstance(v, (int, float)):
+                                discovered_elos[str(k)] = float(v)
+                            elif isinstance(v, dict) and 'players' in v:
+                                for p in v.get('players', []):
+                                    s_id = str(p.get('steam_id', ''))
+                                    if s_id:
+                                        if 'elo' in p:
+                                            discovered_elos[s_id] = float(p['elo'])
                                         if v.get('status') == 'cheater_detected' and (p.get('nickname') == v.get('cheater') or p.get('player_id') == v.get('cheater')):
-                                            banned_set.add(str(p.get('steam_id', '')))
-                                elif isinstance(v, list):
-                                    banned_set.update(str(x) for x in v)
-                    except Exception as e:
-                        logging.warning(f"Failed to load ban manifest from {candidate_path}: {e}")
+                                            banned_set.add(s_id)
+                            elif isinstance(v, list) and not banned_set:
+                                banned_set.update(str(x) for x in v)
+                except Exception as e:
+                    logging.warning(f"Failed to load manifest from {candidate_path}: {e}")
+
+        # Combine discovered ELOs with explicitly passed dictionary
+        combined_elos = {**discovered_elos, **(player_elos or {})}
         
         steam_ids = ticks_df['steamid'].dropna().unique()
         total_segments = 0
@@ -147,8 +162,8 @@ def process_single_demo(
                 is_player_cheater = 0
                 
             p_elo = default_elo
-            if player_elos:
-                p_elo = player_elos.get(str(steamid), player_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
+            if combined_elos:
+                p_elo = combined_elos.get(str(steamid), combined_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
             
             for seg_idx, seg_df in enumerate(atw_segments):
                 # Compute 8D biomechanical features at native 64 Hz

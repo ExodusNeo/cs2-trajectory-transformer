@@ -122,8 +122,15 @@ def compute_spherical_curvature(
     eps: float = 1e-6
 ) -> np.ndarray:
     """
-    Computes trajectory curvature of the 3D unit sight vector v(t) = [cos(p)cos(y), cos(p)sin(y), sin(p)].
-    Curvature kappa = ||v' x v''|| / (||v'||^3 + eps)
+    Computes intrinsic geodesic curvature kappa_g of the 3D unit sight vector v(t) on unit sphere S^2.
+    Thesis Reference: Chapter 3, Equation (8) — Spherical Geodesic Trajectory Curvature
+    
+    Formula:
+        kappa_g(t) = |v(t) . (v'(t) x v''(t))| / (||v'(t)||^3 + eps)
+        
+    Geometric Invariant on S^2:
+    - For any great-circle arc (shortest-distance path on sphere): kappa_g = 0.0 identically.
+    - For non-planar / algorithmic Bézier curves deviating from geodesics: kappa_g > 0.
     """
     # 3D sight vector on unit sphere
     vx = np.cos(pitch_rad) * np.cos(yaw_rad)
@@ -135,17 +142,23 @@ def compute_spherical_curvature(
     v_prime = np.gradient(v, dt, axis=0)
     v_double_prime = np.gradient(v_prime, dt, axis=0)
     
-    # Cross product ||v' x v''||
+    # Cross product (v' x v'')
     cross = np.cross(v_prime, v_double_prime)
-    cross_norm = np.linalg.norm(cross, axis=-1)
     
     # Velocity norm
     speed = np.linalg.norm(v_prime, axis=-1)
     
-    curvature = cross_norm / (speed**3 + eps)
-    # Clip extreme outlier artifacts when speed ~ 0
-    curvature = np.clip(curvature, 0.0, 100.0)
-    return curvature
+    # Intrinsic Geodesic Curvature: scalar triple product |v . (v' x v'')|
+    scalar_triple = np.abs(np.sum(v * cross, axis=-1))
+    
+    # Zero guard during static gaze or near-zero speed
+    static_mask = speed < 1e-3
+    geodesic_curvature = np.zeros_like(speed)
+    geodesic_curvature[~static_mask] = scalar_triple[~static_mask] / (speed[~static_mask]**3 + eps)
+    
+    # Clip extreme outlier artifacts
+    geodesic_curvature = np.clip(geodesic_curvature, 0.0, 50.0)
+    return geodesic_curvature
 
 
 def calculate_windowed_entropy(series: np.ndarray, window_size: int = 32, num_bins: int = 10) -> np.ndarray:

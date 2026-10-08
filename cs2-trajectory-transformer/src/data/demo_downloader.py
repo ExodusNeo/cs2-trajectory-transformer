@@ -519,10 +519,12 @@ class CS2ReplayDownloader:
                     p_nick = p.get('nickname')
                     steam_id = p.get('game_player_id', '')
                     if pid:
+                        p_elo = float(p.get('faceit_elo', p.get('elo', 1500.0)))
                         players_roster.append({
                             'player_id': pid,
                             'nickname': p_nick,
-                            'steam_id': steam_id
+                            'steam_id': steam_id,
+                            'elo': p_elo
                         })
 
             # Download into staging directory
@@ -595,6 +597,25 @@ class CS2ReplayDownloader:
 
             if cheater_found:
                 logging.info(f"[CONFIRMED CHEATER DETECTED] Match {mid} has banned player '{cheater_nickname}'! Promoting to cheater corpus.")
+                
+                # Persist banned SteamID to central registry
+                ban_file = os.path.join("data", "banned_steamids.json")
+                detected_steamids = []
+                try:
+                    os.makedirs("data", exist_ok=True)
+                    existing_bans = set()
+                    if os.path.exists(ban_file):
+                        with open(ban_file, 'r', encoding='utf-8') as f:
+                            existing_bans = set(json.load(f))
+                    for p in info.get('players', []):
+                        if (p.get('nickname') == cheater_nickname or p.get('player_id') == cheater_nickname) and p.get('steam_id'):
+                            existing_bans.add(str(p.get('steam_id')))
+                            detected_steamids.append(str(p.get('steam_id')))
+                    with open(ban_file, 'w', encoding='utf-8') as f:
+                        json.dump(list(existing_bans), f, indent=2)
+                except Exception as e:
+                    logging.warning(f"Could not persist banned SteamID to {ban_file}: {e}")
+
                 for fname in demo_files:
                     src = os.path.join(self.staging_dir, fname)
                     dst = os.path.join(self.cheater_dir, fname)
@@ -603,7 +624,13 @@ class CS2ReplayDownloader:
 
                 if auto_extract and parquet_dir:
                     from data.batch_processor import batch_process_demos
-                    batch_process_demos(self.cheater_dir, os.path.join(parquet_dir, "cheaters"), is_cheater_dataset=True, max_workers=max_workers)
+                    batch_process_demos(
+                        self.cheater_dir, 
+                        os.path.join(parquet_dir, "cheaters"), 
+                        is_cheater_dataset=True, 
+                        banned_steamids=detected_steamids or None,
+                        max_workers=max_workers
+                    )
 
                 info['status'] = 'cheater_detected'
                 info['cheater'] = cheater_nickname

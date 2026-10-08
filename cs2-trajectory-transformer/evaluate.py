@@ -49,13 +49,18 @@ def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, fl
     idx_low_fpr = np.where(fpr <= 0.001)[0]
     tpr_at_low_fpr = float(tpr[idx_low_fpr[-1]]) if len(idx_low_fpr) > 0 else 0.0
     
+    # Calculate True Positive Rate at strict operational target (FPR <= 0.0001 / 0.01%)
+    idx_strict_fpr = np.where(fpr <= 0.0001)[0]
+    tpr_at_strict_fpr = float(tpr[idx_strict_fpr[-1]]) if len(idx_strict_fpr) > 0 else 0.0
+    
     return {
         'AUROC': float(auroc),
         'AUPRC': float(auprc),
         'Accuracy': float(acc),
         'F1-Score': float(f1),
         'FPR_at_95_TPR': float(fpr_at_95_tpr),
-        'TPR_at_0.1%_FPR': float(tpr_at_low_fpr)
+        'TPR_at_0.1%_FPR': float(tpr_at_low_fpr),
+        'TPR_at_0.01%_FPR': float(tpr_at_strict_fpr)
     }
 
 
@@ -63,7 +68,7 @@ def evaluate_model_on_loader(
     model: torch.nn.Module, 
     dataloader, 
     device: torch.device
-) -> Tuple[Dict[str, float], np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[Dict[str, float], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Runs inference across dataloader and calculates metrics."""
     model.eval()
     all_preds = []
@@ -71,6 +76,8 @@ def evaluate_model_on_loader(
     all_embeddings = []
     all_elo_preds = []
     all_elo_targets = []
+    
+    all_player_ids = []
     
     with torch.no_grad():
         for batch in dataloader:
@@ -86,10 +93,13 @@ def evaluate_model_on_loader(
             all_embeddings.append(smurf_emb.cpu().numpy())
             all_elo_preds.extend((elo_pred * 2000.0).cpu().numpy().flatten())
             all_elo_targets.extend((elo_labels * 2000.0).cpu().numpy().flatten())
+            if 'player_ids' in batch:
+                all_player_ids.extend(batch['player_ids'].cpu().numpy().flatten())
             
     y_true = np.array(all_targets)
     y_pred = np.array(all_preds)
     embeddings = np.vstack(all_embeddings) if all_embeddings else np.array([])
+    player_ids = np.array(all_player_ids)
     
     metrics = compute_metrics(y_true, y_pred)
     elo_mae = float(np.mean(np.abs(np.array(all_elo_preds) - np.array(all_elo_targets))))
@@ -106,7 +116,38 @@ def evaluate_model_on_loader(
     except Exception:
         metrics['Spearman_Correlation'] = 0.0
     
-    return metrics, y_true, y_pred, embeddings
+    # Biometric Identification Retrieval (Table 8 / Proposal Section 3.2.9)
+    if len(embeddings) > 1 and len(player_ids) == len(embeddings):
+        try:
+            from sklearn.metrics.pairwise import cosine_similarity
+            sim_matrix = cosine_similarity(embeddings)
+            np.fill_diagonal(sim_matrix, -1.0)  # Exclude self-match
+            top1_correct = 0
+            top5_correct = 0
+            valid_queries = 0
+            for i in range(len(embeddings)):
+                pid = player_ids[i]
+                same_player_mask = (player_ids == pid)
+                same_player_mask[i] = False
+                if np.any(same_player_mask):
+                    valid_queries += 1
+                    ranked = np.argsort(sim_matrix[i])[::-1]
+                    if player_ids[ranked[0]] == pid:
+                        top1_correct += 1
+                    if pid in player_ids[ranked[:5]]:
+                        top5_correct += 1
+            if valid_queries > 0:
+                metrics['Biometric_P@1'] = float(top1_correct / valid_queries)
+                metrics['Biometric_P@5'] = float(top5_correct / valid_queries)
+            else:
+                metrics['Biometric_P@1'] = 0.0
+                metrics['Biometric_P@5'] = 0.0
+        except Exception:
+            metrics['Biometric_P@1'] = 0.0
+            metrics['Biometric_P@5'] = 0.0
+    
+    return metrics, y_true, y_pred, embeddings, player_ids
+
 
 
 def profile_inference_latency(
@@ -117,7 +158,7 @@ def profile_inference_latency(
 ) -> Dict[str, float]:
     """
     Thesis Reference: Chapter 1 & Chapter 3, Section 3.2.8 — Server-Side Latency Profiling
-    Profiles inference throughput (sub-500ms target per match / <5ms per ATW window).
+    Profiles inference throughput with rigorous CUDA synchronization.
     """
     import time
     model.eval()
@@ -128,12 +169,18 @@ def profile_inference_latency(
     with torch.no_grad():
         for _ in range(15):
             _ = model(dummy_input_1, attention_mask=dummy_mask_1)
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
             
     latencies_ms = []
     with torch.no_grad():
         for _ in range(n_runs):
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             t0 = time.perf_counter()
             _ = model(dummy_input_1, attention_mask=dummy_mask_1)
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             latencies_ms.append((time.perf_counter() - t0) * 1000.0)
             
     latencies = np.array(latencies_ms)
@@ -145,10 +192,14 @@ def profile_inference_latency(
     # Batch=32 test for full match evaluation
     dummy_input_32 = torch.randn(32, seq_len, 8, device=device)
     dummy_mask_32 = torch.ones(32, seq_len, dtype=torch.bool, device=device)
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
     t0 = time.perf_counter()
     with torch.no_grad():
         for _ in range(30):
             _ = model(dummy_input_32, attention_mask=dummy_mask_32)
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
     batch_lat = ((time.perf_counter() - t0) / 30) * 1000.0
     
     # Match audit throughput estimation (~100 ATWs per match)
@@ -196,7 +247,7 @@ def main():
     _, _, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
     print(f"[*] Test dataset size: {len(test_loader.dataset)} segments ({len(test_loader)} batches)")
 
-    metrics, y_true, y_pred, _ = evaluate_model_on_loader(model, test_loader, device)
+    metrics, y_true, y_pred, embeddings, player_ids = evaluate_model_on_loader(model, test_loader, device)
 
     print("\n" + "=" * 50)
     print("      THESIS EVALUATION METRICS (TEST SET)      ")
