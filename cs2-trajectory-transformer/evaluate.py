@@ -99,6 +99,7 @@ def compute_metrics(
         'Window_Clean_Count': float(n_neg),
         'Window_FP_Count': float(fp_at_tau),
         'Window_FPR_at_Tau': fpr_at_tau,
+        'Window_Nominal_FPR_95_Upper': fpr_95_ci_upper,
         'Window_FPR_95_Upper': fpr_95_ci_upper,
         'FPR_at_Operating_Threshold': fpr_at_tau,
         'FPR_95_Upper_Bound': fpr_95_ci_upper,
@@ -109,6 +110,65 @@ def compute_metrics(
     }
 
 
+
+
+def compute_cluster_bootstrap_bounds(
+    cluster_ids: List[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    threshold: float,
+    n_bootstraps: int = 1000,
+    random_state: int = 42
+) -> float:
+    """
+    Computes dependence-aware 95% upper confidence bound on False Positive Rate
+    using cluster bootstrap over independent clusters (e.g. match IDs),
+    accounting for intra-cluster correlation and overlapping ATW segments.
+    """
+    rng = np.random.RandomState(random_state)
+    c_arr = np.array(cluster_ids)
+    unique_clusters = np.unique(c_arr)
+    
+    clean_counts = []
+    fp_counts = []
+    for cid in unique_clusters:
+        mask = (c_arr == cid)
+        c_true = y_true[mask]
+        c_pred = y_pred[mask]
+        neg_mask = (c_true == 0)
+        c_clean = int(np.sum(neg_mask))
+        c_fp = int(np.sum(neg_mask & (c_pred >= threshold)))
+        clean_counts.append(c_clean)
+        fp_counts.append(c_fp)
+        
+    clean_arr = np.array(clean_counts)
+    fp_arr = np.array(fp_counts)
+    total_clean = np.sum(clean_arr)
+    
+    if total_clean == 0:
+        return 1.0
+        
+    n_c = len(unique_clusters)
+    if n_c <= 1:
+        # Fall back to nominal Rule of Three if only 1 cluster
+        return float(3.0 / total_clean) if np.sum(fp_arr) == 0 else float(np.sum(fp_arr) / total_clean)
+        
+    boot_indices = rng.choice(n_c, size=(n_bootstraps, n_c), replace=True)
+    boot_clean = np.sum(clean_arr[boot_indices], axis=1)
+    boot_fp = np.sum(fp_arr[boot_indices], axis=1)
+    
+    valid_mask = boot_clean > 0
+    boot_fpr = np.zeros(n_bootstraps, dtype=np.float32)
+    boot_fpr[valid_mask] = boot_fp[valid_mask] / boot_clean[valid_mask]
+    
+    percentile_95 = float(np.percentile(boot_fpr, 95))
+    if percentile_95 == 0.0:
+        # When 0 false positives observed across all cluster resamples,
+        # apply cluster-level Rule of Three bound: 3 / N_clean_clusters
+        clean_clusters = int(np.sum(clean_arr > 0))
+        percentile_95 = float(3.0 / max(1, clean_clusters))
+        
+    return percentile_95
 
 
 def evaluate_model_on_loader(
@@ -207,15 +267,17 @@ def evaluate_model_on_loader(
             mid = all_match_ids[idx] if idx < len(all_match_ids) and all_match_ids[idx] else ''
             session_key = (mid, pid) if mid else pid
             if session_key not in session_map:
-                session_map[session_key] = {'targets': [], 'preds': []}
+                session_map[session_key] = {'targets': [], 'preds': [], 'match_id': mid}
             session_map[session_key]['targets'].append(all_targets[idx])
             session_map[session_key]['preds'].append(all_preds[idx])
             
         session_targets = []
         session_peak_preds = []
+        session_match_ids = []
         for skey, s_data in session_map.items():
             session_targets.append(int(max(s_data['targets'])))
             session_peak_preds.append(float(max(s_data['preds'])))
+            session_match_ids.append(s_data.get('match_id', ''))
             
         s_y_true = np.array(session_targets)
         s_y_pred = np.array(session_peak_preds)
@@ -229,12 +291,23 @@ def evaluate_model_on_loader(
         metrics['Session_FPR'] = float(s_fp / max(1, s_neg))
         if s_neg > 0:
             if s_fp == 0:
-                metrics['Session_FPR_95_Upper'] = float(3.0 / s_neg)
+                s_nominal_upper = float(3.0 / s_neg)
             else:
                 from scipy.stats import beta
-                metrics['Session_FPR_95_Upper'] = float(beta.ppf(0.95, s_fp + 1, s_neg - s_fp))
+                s_nominal_upper = float(beta.ppf(0.95, s_fp + 1, s_neg - s_fp))
         else:
-            metrics['Session_FPR_95_Upper'] = 1.0
+            s_nominal_upper = 1.0
+        metrics['Session_Nominal_FPR_95_Upper'] = s_nominal_upper
+        metrics['Session_FPR_95_Upper'] = s_nominal_upper
+
+        # Dependence-Aware Cluster Bootstrap Bounds over independent match clusters
+        if any(m for m in all_match_ids):
+            metrics['Window_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
+                all_match_ids, y_true, y_pred, operating_threshold
+            )
+            metrics['Session_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
+                session_match_ids, s_y_true, s_y_pred, operating_threshold
+            )
     
     return metrics, y_true, y_pred, embeddings, player_ids
 
