@@ -64,7 +64,7 @@ cs2-trajectory-transformer/
 │       ├── demo_downloader.py              <- FACEIT API polite scraper & archive decompressor
 │       └── batch_processor.py              <- Multiprocessing ATW Parquet extraction pipeline
 │
-├── tests/                                  <- Pytest automated test suite (24/24 verified passing)
+├── tests/                                  <- Pytest automated test suite (26/26 verified passing)
 │   ├── test_kinematics.py                  <- Euler wrapping, curvature, & tremor PSD unit tests
 │   ├── test_model.py                       <- ST-Trans forward pass, masks, & loss function tests
 │   ├── test_dataset.py                     <- Zero data leakage splits & batch collation tests
@@ -146,7 +146,7 @@ Every mathematical formula implemented in code MUST be explicitly tagged with it
 # ==============================================================================
 # Thesis Reference: Chapter 3, Equation (5) — Great-Circle Angular Velocity
 # omega_t = (1 / dt) * sqrt((wrap(Delta p_t))^2 + (cos(p_t) * wrap(Delta y_t))^2)
-# Units: rad/s on unit sphere S^2 (dt = 1.0 / 128.0 s)
+# Units: rad/s on unit sphere S^2 (dt = 1.0 / 64.0 s, native CS2 sub-tick simulation)
 # ==============================================================================
 ```
 
@@ -176,12 +176,12 @@ The following table documents the audited alignment between the approved thesis 
 | :-: | :--- | :--- | :--- | :--- |
 | **1** | **Tabular Baseline Features** | **48 summary statistics** across 8 channels: mean, std, min, max, skewness, kurtosis ($6 \times 8 = 48$). (Sec 3.2.8, Table 7) | `benchmark.py` extracts 48 statistics using `scipy.stats.skew` and `kurtosis` with `nan_to_num` defense. | 🟢 **Resolved (2026-10-03):** Aligned with Table 7. All 48 features active. |
 | **2** | **BiLSTM Baseline Hidden Dimension** | 2 BiLSTM layers, `hidden_dim = 64` (128 bidirectional units). (Sec 3.2.8, Table 7) | `benchmark.py` instantiates `BiLSTMBaseline(hidden_dim=64)`. | 🟢 **Resolved (2026-10-03):** Aligned with Table 7 and `baselines.py`. |
-| **3** | **Tremor Band Power Denominator** | Ratio of $[8, 12]\text{ Hz}$ power relative to active motor bandwidth $[1.0, 30.0]\text{ Hz}$. (Sec 3.2.4, Eq 10) | `kinematics.py` enforces `total_mask = (freqs >= 1.0) & (freqs <= 30.0)`. | 🟢 **Resolved (2026-10-03):** Aligned with Eq (10). Frequencies > 30Hz filtered. |
+| **3** | **Tremor Band Power Denominator** | Ratio of $[8, 12]\text{ Hz}$ power relative to active motor bandwidth $[1.0, 30.0]\text{ Hz}$. (Sec 3.2.4, Eq 10) | `kinematics.py` enforces `total_mask = (freqs >= 1.0) & (freqs <= 30.0)`. | 🟢 **Resolved (2026-10-03):** Aligned with Eq (10). Native 64 Hz sub-tick sampling active. |
 | **4** | **Contrastive Loss Weight $\lambda_{\text{con}}$** | Composite loss specifies $\lambda_{\text{focal}}=1.0$, $\lambda_{\text{infonce}}=0.5$, $\lambda_{\text{elo}}=0.2$. (Sec 3.2.6, Eq 14) | `benchmark.py` and `train.py` both use `0.5 * loss_con`. | 🟢 **Resolved (2026-10-03):** Aligned with Eq (14). Consistent across scripts. |
-| **5** | **Yaw & Pitch Feature Representation** | Channel 1: $\theta_{\text{yaw}} \in [-\pi, \pi]$ rad. Channel 2: $\theta_{\text{pitch}} \in [-\pi/2, \pi/2]$ rad. (Table 5) | `kinematics.py` converts to rad for derivatives; `dataset.py` standardizes per segment. | ℹ️ **Documented:** Linear scaling canceled by z-score standardization $\frac{x-\mu}{\sigma}$. Clarify in paper. |
-| **6** | **ATW Max Length Capping** | Capped at $L_{\max} = 512$ ticks ($\approx 4.0$ s). (Sec 3.2.3, Table 4) | PyTorch DataLoader enforces `max_seq_len = 512` truncation during batch collation. | ℹ️ **Documented:** Standard sequential transformer convention. Clarify DataLoader level in paper. |
-| **7** | **Zero-Leakage Split Guarantee** | Disjoint by both Player ID ($P_{\text{train}} \cap P_{\text{test}} = \emptyset$) AND Match ID ($M_{\text{train}} \cap M_{\text{test}} = \emptyset$). (Sec 3.2.7, Eq 18) | `dataset.py` partitions by unique `steamid`. | ℹ️ **Documented:** Prevents individual biometric memorization across train and test sets. |
-| **8** | **Thesis Manuscript Status** | Chapters 1–3 approved. Outline Defense: November 2026; Target Final Defense: May–June 2027. | Proposal Ch 1–3 updated with rolling buffer protocol. Preliminary benchmarks & ablations completed for Outline Defense; continuous rolling ingestion underway for final defense. | 🟢 **Aligned:** Follow [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) milestone schedule. |
+| **5** | **Normalization Strategy** | Global dataset standardization or domain-aware physical scaling. (Sec 3.2.5) | `dataset.py` computes global training statistics; prevents per-window amplitude collapse. | 🟢 **Resolved (2026-10-08):** Per-window z-score replaced by global scaler. |
+| **6** | **ATW Max Length Capping** | Capped at $L_{\max} = 512$ ticks ($\approx 8.0$ s at 64 Hz). (Sec 3.2.3, Table 4) | PyTorch DataLoader enforces `max_seq_len = 512` truncation during batch collation. | 🟢 **Documented:** Standard sequential transformer convention. |
+| **7** | **Zero-Leakage Split Guarantee** | Disjoint by both Player ID ($P_{\text{train}} \cap P_{\text{test}} = \emptyset$) AND Match ID ($M_{\text{train}} \cap M_{\text{test}} = \emptyset$). (Sec 3.2.7, Eq 18) | `dataset.py` partitions by connected Match/Player clusters. | 🟢 **Resolved (2026-10-08):** Joint cluster partitioning strictly guarantees zero leakage. |
+| **8** | **Thesis Manuscript Status** | Chapters 1–3 approved. Outline Defense: November 2026; Target Final Defense: May–June 2027. | Proposal Ch 1–3 updated with 64 Hz sub-tick physics, CS2CD dataset (795 matches), and AntiCheatPT (IEEE CoG 2025) baseline. | 🟢 **Aligned:** Follow [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) milestone schedule. |
 
 ---
 

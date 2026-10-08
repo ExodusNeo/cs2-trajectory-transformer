@@ -43,8 +43,8 @@ def test_euler_angle_wrapping():
 
 
 def test_tremor_band_power_detection():
-    """Verify that a 10 Hz simulated physiological tremor yields high 8-12 Hz band power."""
-    fs = 128.0
+    """Verify that a 10 Hz simulated physiological tremor yields high 8-12 Hz band power at native 64 Hz."""
+    fs = 64.0
     n = 256
     t = np.arange(n) / fs
     
@@ -60,6 +60,14 @@ def test_tremor_band_power_detection():
     # 10 Hz signal should have significantly higher relative band power in 8-12Hz than 2 Hz signal
     assert np.mean(power_tremor[32:-32]) > 0.6, "10 Hz signal should have high tremor band power"
     assert np.mean(power_drift[32:-32]) < 0.1, "2 Hz signal should have low tremor band power"
+
+
+def test_tremor_band_power_static_view_guard():
+    """Verify that static view holding (zero motion) correctly outputs 0.0 without noise inflation."""
+    fs = 64.0
+    static_signal = np.zeros(256, dtype=np.float32)
+    power_static = compute_tremor_band_power(static_signal, sampling_rate=fs, window_size=64)
+    assert np.all(power_static == 0.0), "Static view should output exactly 0.0 tremor power"
 
 
 def test_spherical_curvature_straight_vs_curved():

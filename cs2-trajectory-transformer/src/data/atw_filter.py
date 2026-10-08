@@ -170,8 +170,13 @@ def extract_active_tracking_windows(
     
     # 1. FOV encounters if enemy data is provided
     if enemy_df is not None and not enemy_df.empty:
-        fov_wins = find_fov_encounters(player_df, enemy_df, fov_threshold_deg=fov_deg)
-        raw_windows.extend(fov_wins)
+        if 'steamid' in enemy_df.columns:
+            for _, e_group in enemy_df.groupby('steamid'):
+                fov_wins = find_fov_encounters(player_df, e_group, fov_threshold_deg=fov_deg)
+                raw_windows.extend(fov_wins)
+        else:
+            fov_wins = find_fov_encounters(player_df, enemy_df, fov_threshold_deg=fov_deg)
+            raw_windows.extend(fov_wins)
         
     # 2. Combat event buffers (weapon fire / damage)
     if event_ticks:

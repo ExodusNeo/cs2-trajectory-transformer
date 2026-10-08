@@ -50,11 +50,11 @@
 - [x] **Task 1.6:** PyTorch ST-Trans Architecture with dual heads (Focal Loss Aimbot + InfoNCE Smurf).
 - [x] **Task 1.7:** Comprehensive Unit Testing (18/18 unit tests passing).
 
-### September 2026: Data Ingestion & Batch Store (2,000 Matches) (100% COMPLETED)
+### September 2026: Ingestion Architecture, Rolling Buffer & CS2CD Integration (100% COMPLETED)
 - [x] **Task 2.1:** Automated Faceit Open API & HLTV Multi-Tier Scraper in `src/data/demo_downloader.py` and `crawl_replays.py` CLI (supporting Beginner [L1-3], Intermediate [L4-6], Advanced [L7-8], and Pro [L9-10] with .dem.zst Backblaze stream & auto-decompression).
-- [x] **Task 2.2:** Ingest clean demos (Faceit Level 10 Pro / FPL) + cheater dataset (Faceit Ban Registry & High-Fidelity Synthetic Benchmark Suite). Enhanced with official API ban verification (`GET /players/{id}/bans`), pre-ban timestamp filtering, and automated lobby spider.
-- [x] **Task 2.3:** Run multi-threaded `src/data/batch_processor.py` to extract ATW Parquet telemetry stores (Verified: 879 ATWs extracted & validated with PyTorch DataLoader).
-- [x] **Task 2.4:** Generate zero-leakage Train/Validation/Test splits (80/10/10) partitioned strictly by Player/Match IDs.
+- [x] **Task 2.2:** Real replay ingestion pipeline + integration with public IEEE CoG 2025 CS2CD benchmark dataset (795 matches) as ground-truth cheater corpus. Enhanced with official API ban verification (`GET /players/{id}/bans`) and autonomous rolling buffer.
+- [x] **Task 2.3:** Multi-threaded `src/data/batch_processor.py` to extract ATW Parquet telemetry stores at native 64 Hz with 30-degree spatial FOV cones and verified cheater-only tagging.
+- [x] **Task 2.4:** Zero-leakage Train/Validation/Test splits (80/10/10) partitioned strictly by connected Match-ID and Player-ID clusters ($M_{\text{train}} \cap M_{\text{test}} = \emptyset, P_{\text{train}} \cap P_{\text{test}} = \emptyset$).
 
 ### October 2026: Full-Scale Model Training & Tuning
 - [x] **Task 3.1:** PyTorch CUDA 13.2 setup for NVIDIA RTX 5060 (`sm_120`) in `D:\cs2_thesis_env` and initial GPU training on real Level 10 FACEIT dataset (1,758 segments) with zero false flags verified on pro match audit.

@@ -35,21 +35,28 @@ def process_single_demo(
     demo_path: str, 
     output_dir: str, 
     is_cheater_demo: bool = False,
+    banned_steamids: Optional[Iterable[Union[str, int]]] = None,
+    player_elos: Optional[Dict[Union[str, int], float]] = None,
     default_elo: float = 1500.0,
-    min_window_len: int = 32
+    min_window_len: int = 32,
+    tick_rate: float = 64.0,
+    use_fov_filter: bool = True
 ) -> int:
     """
     Processes a single CS2 .dem replay:
     1. Parses player ticks and weapon events.
     2. Identifies all players and teams.
-    3. Extracts Active Tracking Windows for each player.
-    4. Computes kinematic & tremor features.
-    5. Saves trajectory segments to Parquet.
+    3. Extracts Active Tracking Windows (combining 30-deg FOV cones & weapon fire buffers).
+    4. Computes 8D kinematic & tremor features at native 64 Hz.
+    5. Correctly labels ONLY verified banned cheaters (never false-labeling clean players).
+    6. Saves trajectory segments to Parquet.
     
     Returns the count of extracted ATW trajectory segments.
     """
     match_name = os.path.splitext(os.path.basename(demo_path))[0]
     os.makedirs(output_dir, exist_ok=True)
+    
+    banned_set = {str(b) for b in banned_steamids} if banned_steamids else set()
     
     try:
         parser = CS2DemoParser(demo_path)
@@ -76,24 +83,46 @@ def process_single_demo(
             else:
                 event_ticks = []
                 
+            # Extract enemy telemetry for 30-degree FOV cone encounters
+            enemy_df = None
+            if use_fov_filter and 'team_num' in p_df.columns:
+                p_team = p_df['team_num'].iloc[0]
+                enemy_df = ticks_df[ticks_df['team_num'] != p_team]
+                
             # Extract Active Tracking Windows (ATW)
             atw_segments = extract_active_tracking_windows(
                 player_df=p_df,
+                enemy_df=enemy_df,
                 event_ticks=event_ticks,
+                fov_deg=30.0,
                 tick_buffer=64,
                 min_window_len=min_window_len
             )
             
+            # Ground-truth cheater labeling:
+            # Tag ONLY verified banned accounts. Never blindly label all 10 players in a match.
+            if banned_set:
+                is_player_cheater = int(str(steamid) in banned_set)
+            elif is_cheater_demo:
+                # If demo filename includes the specific cheater steamid
+                is_player_cheater = int(str(steamid) in match_name)
+            else:
+                is_player_cheater = 0
+                
+            p_elo = default_elo
+            if player_elos:
+                p_elo = player_elos.get(str(steamid), player_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
+            
             for seg_idx, seg_df in enumerate(atw_segments):
-                # Compute 8D biomechanical features
-                featured_df = compute_kinematic_features(seg_df, tick_rate=128.0, extract_tremor=True)
+                # Compute 8D biomechanical features at native 64 Hz
+                featured_df = compute_kinematic_features(seg_df, tick_rate=tick_rate, extract_tremor=True)
                 
                 # Metadata tags
                 featured_df['match_id'] = match_name
                 featured_df['steamid'] = steamid
                 featured_df['segment_id'] = seg_idx
-                featured_df['is_aimbot'] = int(is_cheater_demo)
-                featured_df['player_elo'] = default_elo
+                featured_df['is_aimbot'] = is_player_cheater
+                featured_df['player_elo'] = float(p_elo)
                 
                 # Export to Parquet
                 out_filename = f"{match_name}_p{steamid}_seg{seg_idx}.parquet"
@@ -113,6 +142,9 @@ def batch_process_demos(
     demo_dir: str, 
     output_dir: str, 
     is_cheater_dataset: bool = False,
+    banned_steamids_map: Optional[Dict[str, List[Union[str, int]]]] = None,
+    player_elos_map: Optional[Dict[str, Dict[Union[str, int], float]]] = None,
+    tick_rate: float = 64.0,
     max_workers: int = 4
 ) -> int:
     """Processes an entire directory of .dem files in parallel."""
@@ -121,10 +153,16 @@ def batch_process_demos(
     
     total_extracted = 0
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(process_single_demo, demo, output_dir, is_cheater_dataset): demo 
-            for demo in demo_files
-        }
+        futures = {}
+        for demo in demo_files:
+            m_name = os.path.splitext(os.path.basename(demo))[0]
+            b_ids = banned_steamids_map.get(m_name) if banned_steamids_map else None
+            p_elos = player_elos_map.get(m_name) if player_elos_map else None
+            fut = executor.submit(
+                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, 1500.0, 32, tick_rate, True
+            )
+            futures[fut] = demo
+            
         for future in as_completed(futures):
             demo_path = futures[future]
             try:

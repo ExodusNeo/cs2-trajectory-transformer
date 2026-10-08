@@ -218,17 +218,16 @@ Slide 18: Summary, Defense Timeline & Conclusion
 
 ---
 
-### Slide 15: Preliminary Benchmark Results vs. Baselines
-- **Visual:** Benchmark Summary Table (from `reports/benchmark_summary.csv`):
-  | Model Architecture | AUROC | AUPRC | Accuracy | F1-Score | FPR @ 95% TPR |
-  | :--- | :---: | :---: | :---: | :---: | :---: |
-  | **ST-Trans (Ours)** | **0.9995** | **0.9996** | **98.8%** | **0.9880** | **0.00%** |
-  | Bidirectional LSTM (Bi-LSTM) | 0.9902 | 0.9915 | 96.2% | 0.9610 | 2.15% |
-  | Gradient Boosting (XGBoost) | 0.9840 | 0.9855 | 94.5% | 0.9438 | 3.80% |
-  | Random Forest (48 Features) | 0.9785 | 0.9790 | 93.1% | 0.9302 | 5.20% |
-  | Multi-Layer Perceptron (MLP) | 0.9612 | 0.9620 | 91.0% | 0.9085 | 7.90% |
+### Slide 15: SOTA Comparison Baseline & Evaluation Framework
+- **Visual:** State-of-the-Art Benchmark Comparison against Published Literature (AntiCheatPT, IEEE CoG 2025):
+  | Model / Methodology | Input Representation | Telemetry Corpus | Reported / Target AUROC | Primary Limitation Addressed |
+  | :--- | :--- | :--- | :---: | :--- |
+  | **AntiCheatPT (Loo et al., 2025)** | Raw Coordinates (Pitch, Yaw, Pos) | CS2CD (795 Matches, 64 Hz) | **0.9336** (93.4%) | Lacks domain-specific kinematic inductive bias; vulnerable to smoothed micro-corrections |
+  | **Tabular Baseline (RF / GBDT)** | 48 Summary Statistics | CS2CD + ATW Segments | ~0.88 – 0.91 | Destroys temporal sequence ordering across engagement |
+  | **Sequential Baseline (BiLSTM)** | 8D Kinematics (64 Hidden Units) | CS2CD + ATW Segments | ~0.91 – 0.93 | Lacks long-range cross-attention across multi-second ATWs |
+  | **ST-Trans (Our Proposed Architecture)** | **8D Micro-Kinematics + Dual Heads** | **CS2CD + Rolling FACEIT Stream** | **Target: > 0.9500** | Explicitly models Minimum Jerk, Geodesic Curvature & Biometric Embeddings |
 - **Speaker Script:**  
-  > *"Our preliminary comparative benchmark validates the superiority of ST-Trans. Against competitive baselines—including a 48-feature Random Forest, Gradient Boosting, MLP, and a 2-layer Bidirectional LSTM—our transformer achieves superior AUROC (0.9995) and AUPRC (0.9996). Most importantly for esports operators, ST-Trans achieves a 0.00% False Positive Rate at 95% Sensitivity, eliminating the false-ban catastrophe common to statistical heuristics."*
+  > *"To establish rigorous academic validity, our research benchmarks directly against the newly published state-of-the-art: AntiCheatPT, published at the 2025 IEEE Conference on Games by the IT University of Copenhagen. While AntiCheatPT demonstrated that transformers achieve 93.36% AUC on CS2 raw coordinates, it treats view angles purely as arbitrary sequential numbers. Our thesis hypothesis is that augmenting transformers with explicit biomechanical inductive biases—Flash & Hogan minimum jerk optimization, spherical geodesic curvature, and band-limited tremor dynamics—will elevate discrimination beyond 95% AUC while suppressing false-positive spikes on high-tier pro flicks."*
 
 ---
 
@@ -259,9 +258,9 @@ Slide 18: Summary, Defense Timeline & Conclusion
 ### Slide 18: Summary, Defense Timeline & Next Steps
 - **Key Points:**
   - Chapters 1–3 fully drafted, audited, and aligned with thesis proposal.
-  - All 23/23 automated test suites verified.
-  - Full-scale training on 2,000 matches scheduled for November.
-  - Sub-500ms ONNX deployment and final oral defense targeted for December 2026.
+  - All 26/26 automated unit tests passing across kinematics, dataset, parser, and model.
+  - Integration with the public IEEE CS2CD dataset (795 matches) and autonomous FACEIT rolling buffer.
+  - Outline Defense: November 2026; Target Final Oral Defense: May–June 2027.
 - **Speaker Script:**  
   > *"In summary, our research provides a non-invasive, privacy-preserving, server-side anti-cheat and smurf detection framework founded on biological motor invariants and temporal transformers. We thank you for your time and welcome your insights, critiques, and questions."*
 
@@ -271,7 +270,7 @@ Slide 18: Summary, Defense Timeline & Conclusion
 
 ### ❓ Question 1: "Why use Trajectory Transformers instead of Computer Vision (YOLO/CNNs) analyzing the game screen?"
 > **Airtight Data Science Defense:**  
-> *"Computer vision anti-cheat approaches require rendering 10 distinct video streams per match at 60+ FPS, consuming massive GPU compute and introducing video compression artifacts, occlusions, and map-specific visual noise. Furthermore, CV models cannot access sub-frame 128-tick movement. In contrast, our micro-kinematic approach operates directly on authoritative server gaze vectors—a stream of floating-point numbers requiring less than 1% of the compute, $O(N)$ linear parsing speed, zero rendering overhead, and full immunity to visual camouflage or in-game smoke/flashbang effects."*
+> *"Computer vision anti-cheat approaches require rendering 10 distinct video streams per match at 60+ FPS, consuming massive GPU compute and introducing video compression artifacts, occlusions, and map-specific visual noise. Furthermore, CV models cannot access native 64 Hz sub-tick movement vectors. In contrast, our micro-kinematic approach operates directly on authoritative server gaze vectors—a stream of floating-point numbers requiring less than 1% of the compute, $O(N)$ linear parsing speed, zero rendering overhead, and full immunity to visual camouflage or in-game smoke/flashbang effects."*
 
 ---
 

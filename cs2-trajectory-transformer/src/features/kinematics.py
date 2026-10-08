@@ -26,7 +26,7 @@ def wrap_angle_rad(angles: np.ndarray) -> np.ndarray:
 def compute_spherical_angular_velocity(
     pitch_rad: np.ndarray, 
     yaw_rad: np.ndarray, 
-    dt: float = 1.0 / 128.0
+    dt: float = 1.0 / 64.0
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes true great-circle angular velocity on the unit sphere view model.
@@ -50,7 +50,7 @@ def compute_spherical_angular_velocity(
 
 def compute_tremor_band_power(
     signal_1d: np.ndarray, 
-    sampling_rate: float = 128.0, 
+    sampling_rate: float = 64.0, 
     window_size: int = 64, 
     step_size: int = 1,
     tremor_low: float = 8.0, 
@@ -64,9 +64,9 @@ def compute_tremor_band_power(
     signal_1d : np.ndarray
         1D time series (e.g. angular velocity or jerk).
     sampling_rate : float
-        Telemetry sampling rate (default 128.0 Hz).
+        Telemetry sampling rate (CS2 native sub-tick simulation is 64.0 Hz).
     window_size : int
-        Sliding window sample length (default 64 ticks = 0.5s at 128Hz).
+        Sliding window sample length (default 64 ticks = 1.0s at 64Hz, providing 1.0 Hz bin resolution).
     tremor_low : float
         Lower bound of human tremor frequency (8.0 Hz).
     tremor_high : float
@@ -104,10 +104,13 @@ def compute_tremor_band_power(
         # FFT power spectrum
         fft_vals = np.abs(np.fft.rfft(windowed)) ** 2
         
-        total_p = np.sum(fft_vals[total_mask]) + 1e-9
-        tremor_p = np.sum(fft_vals[tremor_mask])
-        
-        tremor_power[i] = float(tremor_p / total_p)
+        total_p = np.sum(fft_vals[total_mask])
+        if total_p < 1e-4:
+            # Static angle holding or negligible motion: 0.0 (prevents noise inflation)
+            tremor_power[i] = 0.0
+        else:
+            tremor_p = np.sum(fft_vals[tremor_mask])
+            tremor_power[i] = float(tremor_p / (total_p + 1e-9))
         
     return tremor_power
 
@@ -115,7 +118,7 @@ def compute_tremor_band_power(
 def compute_spherical_curvature(
     pitch_rad: np.ndarray, 
     yaw_rad: np.ndarray, 
-    dt: float = 1.0 / 128.0, 
+    dt: float = 1.0 / 64.0, 
     eps: float = 1e-6
 ) -> np.ndarray:
     """
@@ -174,7 +177,7 @@ def calculate_windowed_entropy(series: np.ndarray, window_size: int = 32, num_bi
 
 def compute_kinematic_features(
     df: pd.DataFrame, 
-    tick_rate: float = 128.0, 
+    tick_rate: float = 64.0, 
     extract_tremor: bool = True
 ) -> pd.DataFrame:
     """

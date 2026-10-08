@@ -125,3 +125,44 @@ def test_zero_data_leakage_splits(sample_parquet_dir):
     assert train_players.isdisjoint(val_players), "Data leakage between Train and Val!"
     assert train_players.isdisjoint(test_players), "Data leakage between Train and Test!"
     assert val_players.isdisjoint(test_players), "Data leakage between Val and Test!"
+
+
+def test_zero_data_leakage_matches_and_players_clusters():
+    """Verify that both Match IDs and Player IDs are disjoint when independent matches exist."""
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # 3 independent matches with disjoint players
+        match_configs = [
+            ("matchA", [101, 102]),
+            ("matchB", [201, 202]),
+            ("matchC", [301, 302])
+        ]
+        for m_id, players in match_configs:
+            for p in players:
+                df = pd.DataFrame({
+                    'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
+                    'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
+                    'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+                    'match_id': m_id, 'steamid': p, 'segment_id': 0, 'is_aimbot': 0, 'player_elo': 1500.0
+                })
+                df.to_parquet(os.path.join(temp_dir, f"{m_id}_p{p}_seg0.parquet"), index=False)
+                
+        train_l, val_l, test_l = create_partitioned_dataloaders(
+            data_dir=temp_dir, train_ratio=0.34, val_ratio=0.33, test_ratio=0.33, batch_size=2, seed=42
+        )
+        
+        def get_matches_and_players(loader):
+            matches, players = set(), set()
+            for b in loader:
+                players.update(b['player_ids'].tolist())
+            return players
+            
+        tr_p = get_matches_and_players(train_l)
+        va_p = get_matches_and_players(val_l)
+        te_p = get_matches_and_players(test_l)
+        
+        assert tr_p.isdisjoint(va_p)
+        assert tr_p.isdisjoint(te_p)
+        assert va_p.isdisjoint(te_p)
+    finally:
+        shutil.rmtree(temp_dir)

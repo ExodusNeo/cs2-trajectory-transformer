@@ -36,12 +36,16 @@ class CS2TrajectoryDataset(Dataset):
         file_paths: List[str], 
         feature_cols: Optional[List[str]] = None,
         max_seq_len: int = 512,
-        normalize: bool = True
+        normalize: bool = True,
+        global_mean: Optional[np.ndarray] = None,
+        global_std: Optional[np.ndarray] = None
     ):
         self.file_paths = file_paths
         self.feature_cols = feature_cols or FEATURE_COLUMNS
         self.max_seq_len = max_seq_len
         self.normalize = normalize
+        self.global_mean = global_mean
+        self.global_std = global_std
         
     def __len__(self) -> int:
         return len(self.file_paths)
@@ -55,21 +59,39 @@ class CS2TrajectoryDataset(Dataset):
         feats = feats[:seq_len]
         
         if self.normalize:
-            # Per-segment standardization with epsilon stability
-            mean = np.mean(feats, axis=0, keepdims=True)
-            std = np.std(feats, axis=0, keepdims=True) + 1e-6
-            feats = (feats - mean) / std
+            if self.global_mean is not None and self.global_std is not None:
+                # Global dataset standardization (preserves relative amplitude across segments)
+                feats = (feats - self.global_mean) / (self.global_std + 1e-6)
+            else:
+                # Domain-aware robust scaling: preserves superhuman speed / jerk peaks without per-window collapse
+                for col_idx, col_name in enumerate(self.feature_cols):
+                    if col_name in ['yaw', 'pitch']:
+                        feats[:, col_idx] = feats[:, col_idx] / np.pi
+                    elif col_name == 'angular_velocity':
+                        feats[:, col_idx] = np.log1p(np.maximum(0.0, feats[:, col_idx]))
+                    elif col_name in ['angular_accel', 'angular_jerk']:
+                        sign = np.sign(feats[:, col_idx])
+                        feats[:, col_idx] = sign * np.log1p(np.abs(feats[:, col_idx]))
+                    elif col_name == 'trajectory_curvature':
+                        feats[:, col_idx] = np.clip(feats[:, col_idx] / 10.0, 0.0, 5.0)
+                    elif col_name == 'curvature_entropy':
+                        feats[:, col_idx] = feats[:, col_idx] / 3.3219
+                    elif col_name == 'tremor_power_8_12hz':
+                        # Already strictly bounded in [0.0, 1.0]
+                        pass
             
         aimbot_label = float(df['is_aimbot'].iloc[0]) if 'is_aimbot' in df.columns else 0.0
         elo_label = float(df['player_elo'].iloc[0]) / 2000.0 if 'player_elo' in df.columns else 0.75
         player_id = int(df['steamid'].iloc[0]) if 'steamid' in df.columns else 0
+        match_id = str(df['match_id'].iloc[0]) if 'match_id' in df.columns else ""
         
         return {
             'features': torch.tensor(feats, dtype=torch.float32),
             'seq_len': torch.tensor(seq_len, dtype=torch.long),
             'aimbot_label': torch.tensor(aimbot_label, dtype=torch.float32),
             'elo_label': torch.tensor(elo_label, dtype=torch.float32),
-            'player_id': torch.tensor(player_id, dtype=torch.long)
+            'player_id': torch.tensor(player_id, dtype=torch.long),
+            'match_id': match_id
         }
 
 
@@ -111,6 +133,34 @@ def collate_trajectory_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, 
     }
 
 
+def compute_dataset_statistics(
+    file_paths: List[str], 
+    feature_cols: Optional[List[str]] = None,
+    max_samples: int = 1000
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Computes global mean and standard deviation across training trajectory files.
+    """
+    cols = feature_cols or FEATURE_COLUMNS
+    all_feats = []
+    sample_files = file_paths[:max_samples]
+    for f in sample_files:
+        try:
+            df = pd.read_parquet(f, columns=cols)
+            all_feats.append(df[cols].values)
+        except Exception:
+            continue
+            
+    if not all_feats:
+        return np.zeros(len(cols), dtype=np.float32), np.ones(len(cols), dtype=np.float32)
+        
+    concat = np.concatenate(all_feats, axis=0)
+    mean = np.mean(concat, axis=0).astype(np.float32)
+    std = np.std(concat, axis=0).astype(np.float32)
+    std = np.maximum(std, 1e-4)
+    return mean, std
+
+
 def create_partitioned_dataloaders(
     data_dir: str,
     train_ratio: float = 0.80,
@@ -119,18 +169,19 @@ def create_partitioned_dataloaders(
     batch_size: int = 32,
     seed: int = 42,
     feature_cols: Optional[List[str]] = None,
-    max_seq_len: int = 512
+    max_seq_len: int = 512,
+    use_global_norm: bool = True
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Partitions dataset by unique SteamID / Match to strictly prevent data leakage.
-    Supports arbitrary feature subsets for ablation studies.
+    Partitions dataset by connected components of Match-ID and Player-ID to strictly prevent data leakage.
+    Guarantees:
+      P_train ∩ P_test = ∅
+      M_train ∩ M_test = ∅
     """
     files = glob.glob(os.path.join(data_dir, "*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {data_dir}")
         
-    # Extract unique match IDs or player IDs from filenames
-    # Format: {match_id}_p{steamid}_seg{seg_idx}.parquet
     records = []
     for f in files:
         bname = os.path.basename(f)
@@ -140,25 +191,88 @@ def create_partitioned_dataloaders(
         records.append({'fpath': f, 'match_id': match_id, 'steamid': steamid})
         
     df_meta = pd.DataFrame(records)
-    unique_players = np.array(df_meta['steamid'].unique())
+    
+    # Build connected clusters of matches and players
+    from collections import defaultdict
+    match_to_players = defaultdict(set)
+    player_to_matches = defaultdict(set)
+    for _, row in df_meta.iterrows():
+        match_to_players[row['match_id']].add(row['steamid'])
+        player_to_matches[row['steamid']].add(row['match_id'])
+        
+    visited_matches = set()
+    clusters = []
+    all_matches = sorted(df_meta['match_id'].unique())
+    for m in all_matches:
+        if m in visited_matches:
+            continue
+        c_matches = set()
+        c_players = set()
+        queue = [m]
+        while queue:
+            curr_m = queue.pop(0)
+            if curr_m in c_matches:
+                continue
+            c_matches.add(curr_m)
+            visited_matches.add(curr_m)
+            for p in match_to_players[curr_m]:
+                c_players.add(p)
+                for next_m in player_to_matches[p]:
+                    if next_m not in c_matches and next_m not in visited_matches:
+                        queue.append(next_m)
+        clusters.append((c_matches, c_players))
+        
     rng = np.random.default_rng(seed)
-    rng.shuffle(unique_players)
+    cluster_indices = np.arange(len(clusters))
+    rng.shuffle(cluster_indices)
     
-    n_players = len(unique_players)
-    n_train = int(n_players * train_ratio)
-    n_val = int(n_players * val_ratio)
-    
-    train_players = set(unique_players[:n_train])
-    val_players = set(unique_players[n_train:n_train + n_val])
-    test_players = set(unique_players[n_train + n_val:])
-    
-    train_files = df_meta[df_meta['steamid'].isin(train_players)]['fpath'].tolist()
-    val_files = df_meta[df_meta['steamid'].isin(val_players)]['fpath'].tolist()
-    test_files = df_meta[df_meta['steamid'].isin(test_players)]['fpath'].tolist()
-    
-    train_ds = CS2TrajectoryDataset(train_files, feature_cols=feature_cols, max_seq_len=max_seq_len)
-    val_ds = CS2TrajectoryDataset(val_files, feature_cols=feature_cols, max_seq_len=max_seq_len)
-    test_ds = CS2TrajectoryDataset(test_files, feature_cols=feature_cols, max_seq_len=max_seq_len)
+    # If multiple independent clusters exist, partition by clusters
+    if len(clusters) >= 3:
+        n_c = len(clusters)
+        n_train = max(1, int(n_c * train_ratio))
+        n_val = max(1, int(n_c * val_ratio))
+        if n_train + n_val >= n_c:
+            n_train = max(1, n_c - 2)
+            n_val = 1
+            
+        train_clusters = [clusters[i] for i in cluster_indices[:n_train]]
+        val_clusters = [clusters[i] for i in cluster_indices[n_train:n_train + n_val]]
+        test_clusters = [clusters[i] for i in cluster_indices[n_train + n_val:]]
+        
+        train_matches = set().union(*[c[0] for c in train_clusters])
+        val_matches = set().union(*[c[0] for c in val_clusters])
+        test_matches = set().union(*[c[0] for c in test_clusters])
+        
+        train_files = df_meta[df_meta['match_id'].isin(train_matches)]['fpath'].tolist()
+        val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
+        test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
+    else:
+        # Fallback for small or tightly connected benchmark datasets:
+        # Partition strictly by unique player ID to ensure P_train ∩ P_test = ∅
+        unique_players = np.array(sorted(df_meta['steamid'].unique()))
+        rng.shuffle(unique_players)
+        n_players = len(unique_players)
+        n_train = max(1, int(n_players * train_ratio))
+        n_val = max(1, int(n_players * val_ratio))
+        if n_train + n_val >= n_players:
+            n_train = max(1, n_players - 2)
+            n_val = 1
+            
+        train_players = set(unique_players[:n_train])
+        val_players = set(unique_players[n_train:n_train + n_val])
+        test_players = set(unique_players[n_train + n_val:])
+        
+        train_files = df_meta[df_meta['steamid'].isin(train_players)]['fpath'].tolist()
+        val_files = df_meta[df_meta['steamid'].isin(val_players)]['fpath'].tolist()
+        test_files = df_meta[df_meta['steamid'].isin(test_players)]['fpath'].tolist()
+        
+    global_mean, global_std = None, None
+    if use_global_norm and train_files:
+        global_mean, global_std = compute_dataset_statistics(train_files, feature_cols=feature_cols)
+        
+    train_ds = CS2TrajectoryDataset(train_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
+    val_ds = CS2TrajectoryDataset(val_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
+    test_ds = CS2TrajectoryDataset(test_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
     
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_trajectory_batch)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_trajectory_batch)
