@@ -53,6 +53,20 @@ def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, fl
     idx_strict_fpr = np.where(fpr <= 0.0001)[0]
     tpr_at_strict_fpr = float(tpr[idx_strict_fpr[-1]]) if len(idx_strict_fpr) > 0 else 0.0
     
+    # Statistical Confidence Bound on False Positive Rate (Rule of Three / Clopper-Pearson 95% CI)
+    n_neg = int(np.sum(y_true == 0))
+    fp_at_05 = int(np.sum((y_true == 0) & (y_pred_bin == 1)))
+    fpr_at_05 = float(fp_at_05 / max(1, n_neg))
+    if n_neg > 0:
+        if fp_at_05 == 0:
+            # Rule of Three: -ln(0.05) / N ~ 3 / N
+            fpr_95_ci_upper = float(3.0 / n_neg)
+        else:
+            from scipy.stats import beta
+            fpr_95_ci_upper = float(beta.ppf(0.95, fp_at_05 + 1, n_neg - fp_at_05))
+    else:
+        fpr_95_ci_upper = 1.0
+    
     return {
         'AUROC': float(auroc),
         'AUPRC': float(auprc),
@@ -60,8 +74,12 @@ def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, fl
         'F1-Score': float(f1),
         'FPR_at_95_TPR': float(fpr_at_95_tpr),
         'TPR_at_0.1%_FPR': float(tpr_at_low_fpr),
-        'TPR_at_0.01%_FPR': float(tpr_at_strict_fpr)
+        'TPR_at_0.01%_FPR': float(tpr_at_strict_fpr),
+        'FPR_at_0.5_Threshold': fpr_at_05,
+        'FPR_95_Upper_Bound': fpr_95_ci_upper,
+        'Negative_Samples': n_neg
     }
+
 
 
 def evaluate_model_on_loader(
