@@ -221,6 +221,9 @@ def compute_kinematic_features(
     # 4. Windowed Curvature Shannon Entropy
     curvature_entropy = calculate_windowed_entropy(curvature, window_size=32, num_bins=10)
     
+    # Thesis Reference: Chapter 3, Table 5 — View Angles in Radians
+    df['yaw'] = wrap_angle_rad(yaw_rad)
+    df['pitch'] = np.clip(pitch_rad, -np.pi / 2.0, np.pi / 2.0)
     df['angular_velocity'] = angular_velocity
     df['angular_accel'] = angular_accel
     df['angular_jerk'] = angular_jerk

@@ -82,3 +82,30 @@ def test_extract_active_tracking_windows():
     assert len(slices[0]) == 129, f"Expected 129 ticks (+/- 64 around 200), got {len(slices[0])}"
     assert slices[0]['tick'].min() == 200 - 64
     assert slices[0]['tick'].max() == 200 + 64
+
+
+def test_extract_active_tracking_windows_max_capping():
+    """Test that engagements exceeding max_window_len (512 ticks) are properly chunked."""
+    n_ticks = 1500
+    df = pd.DataFrame({
+        'tick': np.arange(n_ticks),
+        'steamid': [76561198000000000] * n_ticks,
+        'yaw': np.zeros(n_ticks),
+        'pitch': np.zeros(n_ticks),
+        'X': np.zeros(n_ticks),
+        'Y': np.zeros(n_ticks),
+        'Z': np.full(n_ticks, 64.0)
+    })
+    
+    # Continuous events creating an extended ~900-tick window
+    event_ticks = list(range(100, 900, 50))
+    slices = extract_active_tracking_windows(
+        player_df=df,
+        event_ticks=event_ticks,
+        tick_buffer=64,
+        min_window_len=32,
+        max_window_len=512
+    )
+    assert len(slices) >= 2, "Expected extended engagement to be split into chunks"
+    for s in slices:
+        assert len(s) <= 512, f"Expected slice <= 512 ticks, got {len(s)}"

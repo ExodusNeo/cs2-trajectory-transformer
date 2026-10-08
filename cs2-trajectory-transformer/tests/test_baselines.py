@@ -40,6 +40,6 @@ def test_classical_baselines_fit_predict():
     preds = baselines.predict_probabilities(X_test)
     
     assert 'Random Forest' in preds
-    assert 'Gradient Boosting' in preds
+    assert ('Gradient Boosting' in preds or 'XGBoost' in preds)
     assert 'MLP' in preds
     assert len(preds['Random Forest']) == 10

@@ -45,12 +45,17 @@ def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, fl
     idx_95 = np.argmax(tpr >= 0.95) if (tpr >= 0.95).any() else -1
     fpr_at_95_tpr = float(fpr[idx_95]) if idx_95 != -1 else 1.0
     
+    # Calculate True Positive Rate at low False Positive Rate (FPR <= 0.001 / 0.1%)
+    idx_low_fpr = np.where(fpr <= 0.001)[0]
+    tpr_at_low_fpr = float(tpr[idx_low_fpr[-1]]) if len(idx_low_fpr) > 0 else 0.0
+    
     return {
         'AUROC': float(auroc),
         'AUPRC': float(auprc),
         'Accuracy': float(acc),
         'F1-Score': float(f1),
-        'FPR_at_95_TPR': float(fpr_at_95_tpr)
+        'FPR_at_95_TPR': float(fpr_at_95_tpr),
+        'TPR_at_0.1%_FPR': float(tpr_at_low_fpr)
     }
 
 
@@ -104,6 +109,61 @@ def evaluate_model_on_loader(
     return metrics, y_true, y_pred, embeddings
 
 
+def profile_inference_latency(
+    model: torch.nn.Module, 
+    device: torch.device, 
+    seq_len: int = 256, 
+    n_runs: int = 100
+) -> Dict[str, float]:
+    """
+    Thesis Reference: Chapter 1 & Chapter 3, Section 3.2.8 — Server-Side Latency Profiling
+    Profiles inference throughput (sub-500ms target per match / <5ms per ATW window).
+    """
+    import time
+    model.eval()
+    dummy_input_1 = torch.randn(1, seq_len, 8, device=device)
+    dummy_mask_1 = torch.ones(1, seq_len, dtype=torch.bool, device=device)
+    
+    # Warmup
+    with torch.no_grad():
+        for _ in range(15):
+            _ = model(dummy_input_1, attention_mask=dummy_mask_1)
+            
+    latencies_ms = []
+    with torch.no_grad():
+        for _ in range(n_runs):
+            t0 = time.perf_counter()
+            _ = model(dummy_input_1, attention_mask=dummy_mask_1)
+            latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+            
+    latencies = np.array(latencies_ms)
+    mean_lat = float(np.mean(latencies))
+    p50_lat = float(np.percentile(latencies, 50))
+    p95_lat = float(np.percentile(latencies, 95))
+    p99_lat = float(np.percentile(latencies, 99))
+    
+    # Batch=32 test for full match evaluation
+    dummy_input_32 = torch.randn(32, seq_len, 8, device=device)
+    dummy_mask_32 = torch.ones(32, seq_len, dtype=torch.bool, device=device)
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        for _ in range(30):
+            _ = model(dummy_input_32, attention_mask=dummy_mask_32)
+    batch_lat = ((time.perf_counter() - t0) / 30) * 1000.0
+    
+    # Match audit throughput estimation (~100 ATWs per match)
+    match_est_ms = (batch_lat / 32.0) * 100.0
+    
+    return {
+        'single_window_mean_ms': mean_lat,
+        'single_window_p50_ms': p50_lat,
+        'single_window_p95_ms': p95_lat,
+        'single_window_p99_ms': p99_lat,
+        'batch_32_latency_ms': float(batch_lat),
+        'est_100_atw_match_audit_ms': float(match_est_ms)
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Trained ST-Trans Checkpoint")
     parser.add_argument("--data_dir", type=str, default="data/processed_parquet", help="Directory containing Parquet files")
@@ -143,6 +203,16 @@ def main():
     print("=" * 50)
     for k, v in metrics.items():
         print(f"  > {k:<18}: {v:.4f}")
+    print("=" * 50)
+
+    # Inference Latency Profiling
+    print("\n[*] Profiling Server-Side Inference Latency...")
+    lat_metrics = profile_inference_latency(model, device)
+    print("=" * 50)
+    print("      LATENCY & THROUGHPUT BENCHMARK (ms)       ")
+    print("=" * 50)
+    for k, v in lat_metrics.items():
+        print(f"  > {k:<28}: {v:.2f} ms")
     print("=" * 50)
 
 

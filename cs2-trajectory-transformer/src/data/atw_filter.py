@@ -160,11 +160,13 @@ def extract_active_tracking_windows(
     event_ticks: Optional[List[int]] = None, 
     fov_deg: float = 30.0, 
     tick_buffer: int = 64, 
-    min_window_len: int = 32
+    min_window_len: int = 32,
+    max_window_len: int = 512
 ) -> List[pd.DataFrame]:
     """
     High-level extractor: combines FOV encounters and combat event buffers to slice
     player telemetry into Active Tracking Window (ATW) DataFrame segments.
+    Enforces minimum length L_min (32 ticks) and maximum duration cap L_max (512 ticks).
     """
     raw_windows = []
     
@@ -186,12 +188,24 @@ def extract_active_tracking_windows(
     # 3. Merge and prune
     merged_windows = merge_overlapping_windows(raw_windows, min_duration=min_window_len)
     
-    # 4. Extract DataFrame slices
+    # 4. Extract DataFrame slices and enforce L_max duration capping (Sec 3.2.3, Table 4)
     atw_slices = []
     for start_t, end_t in merged_windows:
         slice_df = player_df[(player_df['tick'] >= start_t) & (player_df['tick'] <= end_t)].copy()
-        if len(slice_df) >= min_window_len:
-            slice_df.reset_index(drop=True, inplace=True)
+        if len(slice_df) < min_window_len:
+            continue
+        slice_df.reset_index(drop=True, inplace=True)
+        
+        if len(slice_df) <= max_window_len:
             atw_slices.append(slice_df)
+        else:
+            # Chunk long tracking duels into max_window_len sub-windows (with 50% stride)
+            stride = max_window_len // 2
+            for c_start in range(0, len(slice_df), stride):
+                chunk = slice_df.iloc[c_start:c_start + max_window_len].copy().reset_index(drop=True)
+                if len(chunk) >= min_window_len:
+                    atw_slices.append(chunk)
+                if c_start + max_window_len >= len(slice_df):
+                    break
             
     return atw_slices

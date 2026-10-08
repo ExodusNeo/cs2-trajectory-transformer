@@ -44,23 +44,52 @@ class BiLSTMBaseline(nn.Module):
         return self.classifier(pooled)
 
 
+class TabularMLP(nn.Module):
+    """
+    Thesis Reference: Chapter 3, Section 3.2.8 & Table 28 — Multi-Layer Perceptron Baseline
+    Architecture: Linear(48 -> 128) -> ReLU -> Dropout(0.2) -> Linear(128 -> 64) -> ReLU -> Linear(64 -> 1) -> Sigmoid
+    """
+    def __init__(self, input_dim: int = 48, hidden_dim1: int = 128, hidden_dim2: int = 64, dropout: float = 0.2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim1),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim1, hidden_dim2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim2, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 class ClassicalBaselines:
-    """Wraps tabular / flattened feature classifiers."""
+    """Wraps tabular / flattened feature classifiers (Random Forest, XGBoost / GB, and MLP)."""
     def __init__(self):
         self.rf = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
-        self.gb = GradientBoostingClassifier(n_estimators=100, max_depth=5, random_state=42)
+        try:
+            import xgboost as xgb
+            self.xgb_model = xgb.XGBClassifier(n_estimators=100, max_depth=5, learning_rate=0.1, random_state=42, eval_metric='logloss')
+            self.use_xgboost = True
+        except ImportError:
+            self.xgb_model = GradientBoostingClassifier(n_estimators=100, max_depth=5, random_state=42)
+            self.use_xgboost = False
         self.mlp = MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=200, random_state=42)
 
     def fit_all(self, X_train: np.ndarray, y_train: np.ndarray):
         """Fits all classical models on flattened statistical feature vectors."""
         self.rf.fit(X_train, y_train)
-        self.gb.fit(X_train, y_train)
+        self.xgb_model.fit(X_train, y_train)
         self.mlp.fit(X_train, y_train)
 
     def predict_probabilities(self, X_test: np.ndarray) -> Dict[str, np.ndarray]:
         """Returns predicted probabilities for each baseline."""
+        boost_name = 'XGBoost' if self.use_xgboost else 'Gradient Boosting'
         return {
             'Random Forest': self.rf.predict_proba(X_test)[:, 1],
-            'Gradient Boosting': self.gb.predict_proba(X_test)[:, 1],
+            boost_name: self.xgb_model.predict_proba(X_test)[:, 1],
             'MLP': self.mlp.predict_proba(X_test)[:, 1]
         }

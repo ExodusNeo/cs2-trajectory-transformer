@@ -247,24 +247,53 @@ def create_partitioned_dataloaders(
         val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
         test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
     else:
-        # Fallback for small or tightly connected benchmark datasets:
-        # Partition strictly by unique player ID to ensure P_train ∩ P_test = ∅
-        unique_players = np.array(sorted(df_meta['steamid'].unique()))
-        rng.shuffle(unique_players)
-        n_players = len(unique_players)
-        n_train = max(1, int(n_players * train_ratio))
-        n_val = max(1, int(n_players * val_ratio))
-        if n_train + n_val >= n_players:
-            n_train = max(1, n_players - 2)
+        # Fallback for datasets where graph connectivity creates fewer than 3 disjoint components:
+        # Partition by match and filter cross-match players to guarantee joint disjointness (Eq 18):
+        # M_train ∩ M_test = ∅ AND P_train ∩ P_test = ∅
+        unique_matches = np.array(sorted(df_meta['match_id'].unique()))
+        rng.shuffle(unique_matches)
+        n_m = len(unique_matches)
+        n_train = max(1, int(n_m * train_ratio))
+        n_val = max(1, int(n_m * val_ratio))
+        if n_train + n_val >= n_m:
+            n_train = max(1, n_m - 2)
             n_val = 1
             
-        train_players = set(unique_players[:n_train])
-        val_players = set(unique_players[n_train:n_train + n_val])
-        test_players = set(unique_players[n_train + n_val:])
+        train_m_set = set(unique_matches[:n_train])
+        val_m_set = set(unique_matches[n_train:n_train + n_val])
+        test_m_set = set(unique_matches[n_train + n_val:])
         
-        train_files = df_meta[df_meta['steamid'].isin(train_players)]['fpath'].tolist()
-        val_files = df_meta[df_meta['steamid'].isin(val_players)]['fpath'].tolist()
-        test_files = df_meta[df_meta['steamid'].isin(test_players)]['fpath'].tolist()
+        # Enforce zero-leakage player filtering across match partitions
+        train_df = df_meta[df_meta['match_id'].isin(train_m_set)]
+        train_p = set(train_df['steamid'].unique())
+        
+        val_df = df_meta[df_meta['match_id'].isin(val_m_set) & (~df_meta['steamid'].isin(train_p))]
+        val_p = set(val_df['steamid'].unique())
+        
+        test_df = df_meta[df_meta['match_id'].isin(test_m_set) & (~df_meta['steamid'].isin(train_p | val_p))]
+        
+        # If strict match-disjoint filtering leaves val or test empty (tight multi-match overlap),
+        # fallback to strict player-ID disjoint partitioning
+        if len(test_df) == 0 or len(val_df) == 0:
+            unique_players = np.array(sorted(df_meta['steamid'].unique()))
+            rng.shuffle(unique_players)
+            n_players = len(unique_players)
+            n_p_train = max(1, int(n_players * train_ratio))
+            n_p_val = max(1, int(n_players * val_ratio))
+            if n_p_train + n_p_val >= n_players:
+                n_p_train = max(1, n_players - 2)
+                n_p_val = 1
+            train_p_set = set(unique_players[:n_p_train])
+            val_p_set = set(unique_players[n_p_train:n_p_train + n_p_val])
+            test_p_set = set(unique_players[n_p_train + n_p_val:])
+            
+            train_files = df_meta[df_meta['steamid'].isin(train_p_set)]['fpath'].tolist()
+            val_files = df_meta[df_meta['steamid'].isin(val_p_set)]['fpath'].tolist()
+            test_files = df_meta[df_meta['steamid'].isin(test_p_set)]['fpath'].tolist()
+        else:
+            train_files = train_df['fpath'].tolist()
+            val_files = val_df['fpath'].tolist()
+            test_files = test_df['fpath'].tolist()
         
     global_mean, global_std = None, None
     if use_global_norm and train_files:

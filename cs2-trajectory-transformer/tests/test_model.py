@@ -104,3 +104,32 @@ def test_ablation_feature_dimensions():
         assert smurf_emb.shape == (batch_size, 32)
         assert elo_pred.shape == (batch_size, 1)
 
+
+def test_smurf_detector_decision_rules():
+    """Verify SmurfDetector flags rank-spoofing anomalies and classifies severity."""
+    from models.st_transformer import SmurfDetector
+    import numpy as np
+    
+    detector = SmurfDetector(threshold_elo=400.0)
+    
+    # 1. Aligned player: predicted 1500, reported 1450 -> not smurf
+    res_aligned = detector.evaluate_player(predicted_elo=1500.0, reported_elo=1450.0)
+    assert not res_aligned['is_smurf']
+    assert res_aligned['discrepancy_tier'] == "RANK_ALIGNED"
+    
+    # 2. Critical smurf: predicted 2100 (Level 9 motor skills), reported 900 (Level 3 account)
+    res_smurf = detector.evaluate_player(predicted_elo=2100.0, reported_elo=900.0)
+    assert res_smurf['is_smurf']
+    assert res_smurf['discrepancy_tier'] == "CRITICAL_SMURF"
+    assert res_smurf['delta_elo'] == 1200.0
+    
+    # 3. Embedding similarity check with centroids
+    emb = np.array([1.0, 0.0, 0.0])
+    centroids = {
+        'Pro': np.array([0.99, 0.01, 0.0]),
+        'Beginner': np.array([0.0, 1.0, 0.0])
+    }
+    res_emb = detector.evaluate_player(predicted_elo=2200.0, reported_elo=800.0, player_embedding=emb, tier_centroids=centroids)
+    assert res_emb['centroid_similarities']['Pro'] > 0.95
+    assert res_emb['centroid_similarities']['Beginner'] < 0.1
+

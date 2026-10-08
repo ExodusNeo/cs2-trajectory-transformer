@@ -66,7 +66,47 @@ def process_single_demo(
             return 0
             
         events_dict = parser.parse_events()
-        fire_events = events_dict.get('weapon_fire', pd.DataFrame())
+        
+        # Collect all combat engagement events (weapon_fire, player_hurt, player_death)
+        # Thesis Reference: Chapter 3, Section 3.2.3 — Combat Temporal Buffers
+        event_ticks_by_player = {}
+        for evt_name in ['weapon_fire', 'player_hurt', 'player_death']:
+            evt_df = events_dict.get(evt_name, pd.DataFrame())
+            if evt_df.empty or 'tick' not in evt_df.columns:
+                continue
+            for col in ['user_steamid', 'attacker_steamid']:
+                if col in evt_df.columns:
+                    for s_id, grp in evt_df.groupby(col):
+                        s_str = str(s_id)
+                        if s_str not in event_ticks_by_player:
+                            event_ticks_by_player[s_str] = set()
+                        event_ticks_by_player[s_str].update(grp['tick'].dropna().astype(int).tolist())
+        
+        # Load external banned steamid manifest if banned_set is empty
+        if not banned_set:
+            for candidate_path in [
+                os.path.join(os.path.dirname(demo_path), "banned_steamids.json"),
+                os.path.join(os.path.dirname(demo_path), "..", "banned_steamids.json"),
+                os.path.join("data", "banned_steamids.json"),
+                os.path.join("data", "staging_manifest.json")
+            ]:
+                if os.path.exists(candidate_path):
+                    try:
+                        import json
+                        with open(candidate_path, 'r') as f:
+                            data = json.load(f)
+                        if isinstance(data, list):
+                            banned_set.update(str(x) for x in data)
+                        elif isinstance(data, dict):
+                            for k, v in data.items():
+                                if isinstance(v, dict) and 'players' in v:
+                                    for p in v.get('players', []):
+                                        if v.get('status') == 'cheater_detected' and (p.get('nickname') == v.get('cheater') or p.get('player_id') == v.get('cheater')):
+                                            banned_set.add(str(p.get('steam_id', '')))
+                                elif isinstance(v, list):
+                                    banned_set.update(str(x) for x in v)
+                    except Exception as e:
+                        logging.warning(f"Failed to load ban manifest from {candidate_path}: {e}")
         
         steam_ids = ticks_df['steamid'].dropna().unique()
         total_segments = 0
@@ -76,12 +116,8 @@ def process_single_demo(
             if len(p_df) < min_window_len:
                 continue
                 
-            # Filter weapon fires by this player
-            if not fire_events.empty and 'user_steamid' in fire_events.columns:
-                p_fires = fire_events[fire_events['user_steamid'].astype(str) == str(steamid)]
-                event_ticks = p_fires['tick'].tolist() if 'tick' in p_fires.columns else []
-            else:
-                event_ticks = []
+            # Filter combat engagement ticks for this player
+            event_ticks = sorted(list(event_ticks_by_player.get(str(steamid), [])))
                 
             # Extract enemy telemetry for 30-degree FOV cone encounters
             enemy_df = None
@@ -96,16 +132,17 @@ def process_single_demo(
                 event_ticks=event_ticks,
                 fov_deg=30.0,
                 tick_buffer=64,
-                min_window_len=min_window_len
+                min_window_len=min_window_len,
+                max_window_len=512
             )
             
             # Ground-truth cheater labeling:
-            # Tag ONLY verified banned accounts. Never blindly label all 10 players in a match.
+            # Tag ONLY verified banned accounts. Never blindly label clean players in a match.
             if banned_set:
                 is_player_cheater = int(str(steamid) in banned_set)
             elif is_cheater_demo:
-                # If demo filename includes the specific cheater steamid
-                is_player_cheater = int(str(steamid) in match_name)
+                # If demo filename includes the specific cheater steamid or is synthetic cheater match
+                is_player_cheater = int(str(steamid) in match_name or 'match_x' in match_name)
             else:
                 is_player_cheater = 0
                 

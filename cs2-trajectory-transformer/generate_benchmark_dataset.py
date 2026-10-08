@@ -22,9 +22,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 def generate_human_trajectory(
     n_ticks: int = 256, 
     elo: float = 2000.0, 
-    tick_rate: float = 128.0
+    tick_rate: float = 64.0
 ) -> pd.DataFrame:
-    """Simulates human aiming with Minimum Jerk planning and 8-12 Hz biological tremor."""
+    """Simulates human aiming with Minimum Jerk planning and 8-12 Hz biological tremor at native 64 Hz."""
     t = np.arange(n_ticks) / tick_rate
     
     # Skill-dependent parameters
@@ -61,9 +61,9 @@ def generate_human_trajectory(
 def generate_cheater_trajectory(
     n_ticks: int = 256, 
     cheat_type: str = 'snap', 
-    tick_rate: float = 128.0
+    tick_rate: float = 64.0
 ) -> pd.DataFrame:
-    """Simulates algorithmic aimbot behaviors (Zero Tremor, Linear Interpolation, Instant Snaps)."""
+    """Simulates algorithmic aimbot behaviors at native 64 Hz (Zero Tremor, Linear Interpolation, Instant Snaps)."""
     t = np.arange(n_ticks) / tick_rate
     
     target_yaw = np.random.uniform(-45, 45)
@@ -132,8 +132,8 @@ def create_synthetic_dataset(output_dir: str = "data/processed_parquet", num_sam
     for p_id, elo in clean_players:
         for seg in range(samples_per_player):
             n_ticks = np.random.randint(128, 256)
-            raw_df = generate_human_trajectory(n_ticks=n_ticks, elo=elo)
-            feat_df = compute_kinematic_features(raw_df, tick_rate=128.0, extract_tremor=True)
+            raw_df = generate_human_trajectory(n_ticks=n_ticks, elo=elo, tick_rate=64.0)
+            feat_df = compute_kinematic_features(raw_df, tick_rate=64.0, extract_tremor=True)
             
             feat_df['match_id'] = f"match_c{p_id % 5}"
             feat_df['steamid'] = p_id
@@ -149,8 +149,8 @@ def create_synthetic_dataset(output_dir: str = "data/processed_parquet", num_sam
     for p_id, cheat_type in cheater_players:
         for seg in range(samples_per_player):
             n_ticks = np.random.randint(128, 256)
-            raw_df = generate_cheater_trajectory(n_ticks=n_ticks, cheat_type=cheat_type)
-            feat_df = compute_kinematic_features(raw_df, tick_rate=128.0, extract_tremor=True)
+            raw_df = generate_cheater_trajectory(n_ticks=n_ticks, cheat_type=cheat_type, tick_rate=64.0)
+            feat_df = compute_kinematic_features(raw_df, tick_rate=64.0, extract_tremor=True)
             
             feat_df['match_id'] = f"match_x{p_id % 5}"
             feat_df['steamid'] = p_id

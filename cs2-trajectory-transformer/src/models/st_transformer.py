@@ -4,10 +4,11 @@ Dual-head architecture for Aimbot Binary Classification and Contrastive Smurf Em
 """
 
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Union
 
 
 class PositionalEncoding(nn.Module):
@@ -139,3 +140,58 @@ class STTrajectoryTransformer(nn.Module):
         predicted_elo = self.elo_head(smurf_embedding)
         
         return aimbot_prob, smurf_embedding, predicted_elo
+
+
+class SmurfDetector:
+    """
+    Thesis Reference: Chapter 1 & Chapter 3, Section 3.2.6 — Biometric Skill Profiler & Smurf Detector
+    
+    Evaluates player motor proficiency against reported account rank to expose rank spoofing:
+    1. Continuous ELO Discrepancy: Delta_ELO = predicted_elo - reported_elo
+    2. Threshold Decision Rule: Flags smurf if Delta_ELO >= threshold_elo (default: 400.0, ~2 FACEIT tiers).
+    3. Biometric Embedding Alignment: Cosine similarity matching to skill-tier cluster centroids.
+    """
+    def __init__(self, threshold_elo: float = 400.0):
+        self.threshold_elo = threshold_elo
+
+    def evaluate_player(
+        self, 
+        predicted_elo: float, 
+        reported_elo: float, 
+        player_embedding: Optional[np.ndarray] = None,
+        tier_centroids: Optional[Dict[str, np.ndarray]] = None
+    ) -> Dict[str, Union[float, bool, str, Dict[str, float]]]:
+        """
+        Evaluates a single player's predicted motor skill against nominal account rating.
+        """
+        delta_elo = float(predicted_elo - reported_elo)
+        is_smurf = delta_elo >= self.threshold_elo
+        
+        # Categorize discrepancy severity
+        if delta_elo >= 800.0:
+            severity = "CRITICAL_SMURF"
+        elif delta_elo >= 400.0:
+            severity = "HIGH_CONFIDENCE_SMURF"
+        elif delta_elo >= 200.0:
+            severity = "SUSPICIOUS_UNDER_RANKED"
+        elif delta_elo <= -400.0:
+            severity = "BOOSTED_OVER_RANKED"
+        else:
+            severity = "RANK_ALIGNED"
+
+        centroid_similarities = {}
+        if player_embedding is not None and tier_centroids is not None:
+            norm_emb = player_embedding / (np.linalg.norm(player_embedding) + 1e-6)
+            for tier_name, centroid in tier_centroids.items():
+                norm_c = centroid / (np.linalg.norm(centroid) + 1e-6)
+                sim = float(np.dot(norm_emb, norm_c))
+                centroid_similarities[tier_name] = sim
+
+        return {
+            'predicted_elo': float(predicted_elo),
+            'reported_elo': float(reported_elo),
+            'delta_elo': delta_elo,
+            'is_smurf': is_smurf,
+            'discrepancy_tier': severity,
+            'centroid_similarities': centroid_similarities
+        }
