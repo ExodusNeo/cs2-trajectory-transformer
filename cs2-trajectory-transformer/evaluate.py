@@ -32,7 +32,7 @@ from data.dataset import create_partitioned_dataloaders
 def calibrate_operating_threshold(
     y_val: np.ndarray, 
     y_val_prob: np.ndarray, 
-    target_fpr: float = 0.001
+    target_fpr: float = 0.0001
 ) -> float:
     """
     Calibrates operational decision threshold tau* on the validation partition.
@@ -121,6 +121,7 @@ def evaluate_model_on_loader(
     all_elo_targets = []
     
     all_player_ids = []
+    all_match_ids = []
     
     with torch.no_grad():
         for batch in dataloader:
@@ -138,6 +139,10 @@ def evaluate_model_on_loader(
             all_elo_targets.extend((elo_labels * 2000.0).cpu().numpy().flatten())
             if 'player_ids' in batch:
                 all_player_ids.extend(batch['player_ids'].cpu().numpy().flatten())
+            if 'match_ids' in batch:
+                all_match_ids.extend(batch['match_ids'])
+            else:
+                all_match_ids.extend([''] * len(aimbot_prob))
             
     y_true = np.array(all_targets)
     y_pred = np.array(all_preds)
@@ -194,14 +199,16 @@ def evaluate_model_on_loader(
         session_map = {}
         for idx in range(len(all_preds)):
             pid = all_player_ids[idx]
-            if pid not in session_map:
-                session_map[pid] = {'targets': [], 'preds': []}
-            session_map[pid]['targets'].append(all_targets[idx])
-            session_map[pid]['preds'].append(all_preds[idx])
+            mid = all_match_ids[idx] if idx < len(all_match_ids) and all_match_ids[idx] else ''
+            session_key = (mid, pid) if mid else pid
+            if session_key not in session_map:
+                session_map[session_key] = {'targets': [], 'preds': []}
+            session_map[session_key]['targets'].append(all_targets[idx])
+            session_map[session_key]['preds'].append(all_preds[idx])
             
         session_targets = []
         session_peak_preds = []
-        for pid, s_data in session_map.items():
+        for skey, s_data in session_map.items():
             session_targets.append(int(max(s_data['targets'])))
             session_peak_preds.append(float(max(s_data['preds'])))
             
@@ -301,6 +308,8 @@ def main():
     parser.add_argument("--d_model", type=int, default=128, help="Transformer hidden dimension")
     parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads")
     parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers")
+    parser.add_argument("--target_fpr", type=float, default=0.0001, help="Operational target false positive rate (default: 0.0001 = 0.01%)")
+    parser.add_argument("--use_global_norm", action="store_true", help="Use global dataset standardization")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -321,14 +330,23 @@ def main():
     else:
         print(f"[!] Checkpoint not found at {args.model_path}, evaluating with initialized weights.")
 
-    # Load dataloaders
-    train_loader, val_loader, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
+    # Load dataloaders (checking for saved training scaler)
+    scaler_path = args.model_path.replace('.pt', '_scaler.npz')
+    scaler_load = scaler_path if os.path.exists(scaler_path) else None
+    if scaler_load:
+        print(f"[*] Found training scaler statistics at: {scaler_load}")
+    train_loader, val_loader, test_loader = create_partitioned_dataloaders(
+        args.data_dir, 
+        batch_size=args.batch_size,
+        use_global_norm=args.use_global_norm,
+        scaler_load_path=scaler_load
+    )
     print(f"[*] Partitions: Val={len(val_loader.dataset)} segments, Test={len(test_loader.dataset)} segments")
 
     # 1. Calibrate operational decision threshold tau* on validation partition
-    print("[*] Calibrating operational decision threshold on validation set...")
+    print(f"[*] Calibrating operational decision threshold on validation set (target FPR <= {args.target_fpr*100:.3f}%)...")
     val_metrics, val_true, val_pred, _, _ = evaluate_model_on_loader(model, val_loader, device)
-    calibrated_tau = calibrate_operating_threshold(val_true, val_pred, target_fpr=0.001)
+    calibrated_tau = calibrate_operating_threshold(val_true, val_pred, target_fpr=args.target_fpr)
     print(f"[*] Calibrated operating threshold tau*: {calibrated_tau:.4f}")
 
     # 2. Evaluate on held-out test partition using calibrated threshold

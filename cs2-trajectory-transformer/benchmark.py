@@ -201,6 +201,10 @@ def run_full_benchmark():
     
     df_results = pd.DataFrame(all_results).T[['AUROC', 'AUPRC', 'Accuracy', 'F1-Score', 'FPR_at_95_TPR']]
     df_results['Accuracy'] = df_results['Accuracy'] * 100.0
+    df_results.insert(0, 'Test_Samples', len(y_test))
+    df_results.insert(1, 'Clean_Samples', int(np.sum(y_test == 0)))
+    df_results.insert(2, 'Cheater_Samples', int(np.sum(y_test == 1)))
+    df_results['Data_Provenance'] = "Synthetic Pipeline Verification (Phase 2 Prototype)"
     
     os.makedirs("reports", exist_ok=True)
     csv_path = "reports/benchmark_summary.csv"

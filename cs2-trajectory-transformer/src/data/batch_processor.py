@@ -20,17 +20,30 @@ from features.kinematics import compute_kinematic_features
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 
-def pseudonymize_steamid(steamid: Union[str, int], salt: str = "cs2-trajectory-transformer-v1") -> int:
+def pseudonymize_steamid(steamid: Union[str, int], salt: Optional[str] = None) -> int:
     """
     Thesis Reference: Section 3.3.1 — RA 10173 Cryptographic Pseudonymization.
     Transforms raw 64-bit SteamID to an irreversible 60-bit pseudorandom hash integer:
     h = SHA-256(SteamID || salt)
-    Severing connection to personal gamer handles and public profile URLs.
+    using a managed secret salt (configured via CS2_PSEUDONYMIZATION_SALT environment variable).
+    Obscures direct links to personal profiles and gamer handles, providing pseudonymous telemetry.
     """
-    raw_str = f"{steamid}_{salt}".encode('utf-8')
+    effective_salt = salt or os.environ.get("CS2_PSEUDONYMIZATION_SALT") or "cs2-trajectory-transformer-v1"
+    raw_str = f"{steamid}_{effective_salt}".encode('utf-8')
     h = hashlib.sha256(raw_str).hexdigest()
     # Map first 15 hex characters to positive 60-bit integer (fits PyTorch int64 and Parquet int64)
     return int(h[:15], 16)
+
+
+def pseudonymize_match_id(match_id: str, salt: Optional[str] = None) -> str:
+    """
+    Cryptographically pseudonymizes external match identifiers (e.g. FACEIT match UUIDs)
+    using a managed secret salt, preventing direct linking against public match scoreboards.
+    """
+    effective_salt = salt or os.environ.get("CS2_PSEUDONYMIZATION_SALT") or "cs2-trajectory-transformer-v1"
+    raw_str = f"{match_id}_{effective_salt}".encode('utf-8')
+    h = hashlib.sha256(raw_str).hexdigest()
+    return f"match_{h[:16]}"
 
 
 
@@ -55,7 +68,8 @@ def process_single_demo(
     default_elo: float = 1500.0,
     min_window_len: int = 32,
     tick_rate: float = 64.0,
-    use_fov_filter: bool = True
+    use_fov_filter: bool = True,
+    pseudonymize_matches: bool = True
 ) -> int:
     """
     Processes a single CS2 .dem replay:
@@ -181,19 +195,20 @@ def process_single_demo(
                 p_elo = combined_elos.get(str(steamid), combined_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
             
             anon_steamid = pseudonymize_steamid(steamid)
+            anon_match_id = pseudonymize_match_id(match_name) if pseudonymize_matches else match_name
             for seg_idx, seg_df in enumerate(atw_segments):
                 # Compute 8D biomechanical features at native 64 Hz
                 featured_df = compute_kinematic_features(seg_df, tick_rate=tick_rate, extract_tremor=True)
                 
                 # Metadata tags (RA 10173 Cryptographically Pseudonymized)
-                featured_df['match_id'] = match_name
+                featured_df['match_id'] = anon_match_id
                 featured_df['steamid'] = anon_steamid
                 featured_df['segment_id'] = seg_idx
                 featured_df['is_aimbot'] = is_player_cheater
                 featured_df['player_elo'] = float(p_elo)
                 
                 # Export to Parquet
-                out_filename = f"{match_name}_p{anon_steamid}_seg{seg_idx}.parquet"
+                out_filename = f"{anon_match_id}_p{anon_steamid}_seg{seg_idx}.parquet"
                 out_path = os.path.join(output_dir, out_filename)
                 featured_df.to_parquet(out_path, index=False)
                 total_segments += 1
@@ -214,7 +229,8 @@ def batch_process_demos(
     banned_steamids_map: Optional[Dict[str, List[Union[str, int]]]] = None,
     player_elos_map: Optional[Dict[str, Dict[Union[str, int], float]]] = None,
     tick_rate: float = 64.0,
-    max_workers: int = 4
+    max_workers: int = 4,
+    pseudonymize_matches: bool = True
 ) -> int:
     """Processes an entire directory of .dem files in parallel."""
     demo_files = glob.glob(os.path.join(demo_dir, "*.dem"))
@@ -228,7 +244,7 @@ def batch_process_demos(
             b_ids = banned_steamids_map.get(m_name) if banned_steamids_map else None
             p_elos = player_elos_map.get(m_name) if player_elos_map else None
             fut = executor.submit(
-                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, 1500.0, 32, tick_rate, True
+                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, 1500.0, 32, tick_rate, True, pseudonymize_matches
             )
             futures[fut] = demo
             

@@ -12,17 +12,23 @@ import torch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
+from typing import Optional
 from features.kinematics import compute_kinematic_features
 from models.st_transformer import STTrajectoryTransformer
-from data.dataset import normalize_kinematic_features
+from data.dataset import normalize_kinematic_features, load_scaler_stats
 from generate_benchmark_dataset import generate_human_trajectory, generate_cheater_trajectory
 
 
-def preprocess_df(df: pd.DataFrame, feature_cols: list) -> torch.Tensor:
+def preprocess_df(
+    df: pd.DataFrame, 
+    feature_cols: list,
+    global_mean: Optional[np.ndarray] = None,
+    global_std: Optional[np.ndarray] = None
+) -> torch.Tensor:
     """Extracts features, computes kinematics at native 64 Hz, scales, and converts to tensor."""
     feat_df = compute_kinematic_features(df, tick_rate=64.0, extract_tremor=True)
     raw_array = feat_df[feature_cols].values.astype(np.float32)
-    norm_array = normalize_kinematic_features(raw_array, feature_cols)
+    norm_array = normalize_kinematic_features(raw_array, feature_cols, global_mean=global_mean, global_std=global_std)
     return torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0)
 
 
@@ -63,6 +69,20 @@ def main():
         
     model.eval()
 
+    # Load Scaler if saved during global standardization training
+    scaler_path = ckpt_path.replace('.pt', '_scaler.npz')
+    global_mean, global_std = None, None
+    if os.path.exists(scaler_path):
+        loaded = load_scaler_stats(scaler_path)
+        if loaded is not None:
+            global_mean, global_std, _ = loaded
+            print(f"[*] Loaded training scaler statistics from: {scaler_path}")
+    elif os.path.exists("models/checkpoints/scaler_stats.npz"):
+        loaded = load_scaler_stats("models/checkpoints/scaler_stats.npz")
+        if loaded is not None:
+            global_mean, global_std, _ = loaded
+            print("[*] Loaded training scaler statistics from: models/checkpoints/scaler_stats.npz")
+
     # Custom real Parquet evaluation
     if args.file and os.path.exists(args.file):
         print("\n" + "-" * 75)
@@ -70,7 +90,7 @@ def main():
         print("-" * 75)
         df = pd.read_parquet(args.file)
         raw_array = df[feature_cols].values.astype(np.float32)
-        norm_array = normalize_kinematic_features(raw_array, feature_cols)
+        norm_array = normalize_kinematic_features(raw_array, feature_cols, global_mean=global_mean, global_std=global_std)
         input_tensor = torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
@@ -90,7 +110,7 @@ def main():
     print("  [TEST 1] SIMULATING ORGANIC HUMAN AIM (Faceit Level 10 Pro / ~2600 ELO)")
     print("-" * 75)
     human_df = generate_human_trajectory(n_ticks=256, elo=2600.0, tick_rate=64.0)
-    input_human = preprocess_df(human_df, feature_cols)
+    input_human = preprocess_df(human_df, feature_cols, global_mean=global_mean, global_std=global_std)
     
     with torch.no_grad():
         aim_prob_h, emb_h, elo_pred_h = model(input_human)
@@ -105,7 +125,7 @@ def main():
     print("  [TEST 2] SIMULATING ALGORITHMIC HARDWARE SNAP AIMBOT (DMA Exploit)")
     print("-" * 75)
     cheat_df = generate_cheater_trajectory(n_ticks=256, cheat_type='snap', tick_rate=64.0)
-    input_cheat = preprocess_df(cheat_df, feature_cols)
+    input_cheat = preprocess_df(cheat_df, feature_cols, global_mean=global_mean, global_std=global_std)
 
     
     with torch.no_grad():

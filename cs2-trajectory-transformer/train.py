@@ -120,13 +120,20 @@ def main():
     parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers (default: 4)")
     parser.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay coefficient (default: 1e-2)")
     parser.add_argument("--save_path", type=str, default="models/checkpoints/best_model.pt", help="Checkpoint save path")
+    parser.add_argument("--use_global_norm", action="store_true", help="Use global dataset standardization rather than canonical domain scaling")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] Training ST-Trans on {device} (Epochs: {args.epochs}, Batch Size: {args.batch_size})")
 
     # Dataloaders
-    train_loader, val_loader, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
+    scaler_save_path = args.save_path.replace('.pt', '_scaler.npz') if args.use_global_norm else None
+    train_loader, val_loader, test_loader = create_partitioned_dataloaders(
+        args.data_dir, 
+        batch_size=args.batch_size,
+        use_global_norm=args.use_global_norm,
+        scaler_save_path=scaler_save_path
+    )
     print(f"[*] Dataset split: {len(train_loader.dataset)} Train, {len(val_loader.dataset)} Val, {len(test_loader.dataset)} Test samples.")
 
     # Model

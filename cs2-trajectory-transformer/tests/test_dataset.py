@@ -159,14 +159,36 @@ def test_zero_data_leakage_matches_and_players_clusters():
             matches, players = set(), set()
             for b in loader:
                 players.update(b['player_ids'].tolist())
-            return players
+                matches.update(b['match_ids'])
+            return matches, players
             
-        tr_p = get_matches_and_players(train_l)
-        va_p = get_matches_and_players(val_l)
-        te_p = get_matches_and_players(test_l)
+        tr_m, tr_p = get_matches_and_players(train_l)
+        va_m, va_p = get_matches_and_players(val_l)
+        te_m, te_p = get_matches_and_players(test_l)
         
         assert tr_p.isdisjoint(va_p)
         assert tr_p.isdisjoint(te_p)
         assert va_p.isdisjoint(te_p)
+        
+        assert tr_m.isdisjoint(va_m)
+        assert tr_m.isdisjoint(te_m)
+        assert va_m.isdisjoint(te_m)
     finally:
         shutil.rmtree(temp_dir)
+
+
+def test_scaler_save_and_load(tmp_path):
+    """Verify that global normalization statistics serialize and deserialize accurately."""
+    from data.dataset import save_scaler_stats, load_scaler_stats
+    scaler_file = str(tmp_path / "scaler.npz")
+    mean = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], dtype=np.float32)
+    std = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+    
+    save_scaler_stats(scaler_file, mean, std)
+    loaded = load_scaler_stats(scaler_file)
+    
+    assert loaded is not None
+    l_mean, l_std, l_cols = loaded
+    np.testing.assert_allclose(l_mean, mean)
+    np.testing.assert_allclose(l_std, std)
+    assert l_cols == FEATURE_COLUMNS

@@ -22,7 +22,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 from data.demo_parser import CS2DemoParser
 from data.demo_downloader import CS2ReplayDownloader
 from data.atw_filter import extract_active_tracking_windows
-from data.dataset import normalize_kinematic_features
+from data.dataset import normalize_kinematic_features, load_scaler_stats
 from features.kinematics import compute_kinematic_features
 from models.st_transformer import STTrajectoryTransformer
 
@@ -90,7 +90,21 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
     # 2. Load Model
     model = load_st_transformer(model_path, device)
 
-    # 3. Analyze each player
+    # 3. Load Scaler (if saved during global standardization training)
+    scaler_path = model_path.replace('.pt', '_scaler.npz')
+    global_mean, global_std = None, None
+    if os.path.exists(scaler_path):
+        loaded = load_scaler_stats(scaler_path)
+        if loaded is not None:
+            global_mean, global_std, _ = loaded
+            print(f"[*] Loaded training scaler statistics from {scaler_path}")
+    elif os.path.exists("models/checkpoints/scaler_stats.npz"):
+        loaded = load_scaler_stats("models/checkpoints/scaler_stats.npz")
+        if loaded is not None:
+            global_mean, global_std, _ = loaded
+            print("[*] Loaded training scaler statistics from models/checkpoints/scaler_stats.npz")
+
+    # 4. Analyze each player
     players_data = []
     player_names = {}
     for steamid in ticks_df['steamid'].dropna().unique():
@@ -121,7 +135,7 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
         for seg_idx, seg_df in enumerate(atws):
             feat_df = compute_kinematic_features(seg_df, tick_rate=64.0, extract_tremor=True)
             raw_array = feat_df[FEATURE_COLS].values.astype(np.float32)
-            norm_array = normalize_kinematic_features(raw_array, FEATURE_COLS)
+            norm_array = normalize_kinematic_features(raw_array, FEATURE_COLS, global_mean=global_mean, global_std=global_std)
             input_tensor = torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0).to(device)
 
             with torch.no_grad():

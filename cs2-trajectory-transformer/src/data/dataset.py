@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Union, Any
 
 
 FEATURE_COLUMNS = [
@@ -56,6 +56,42 @@ def normalize_kinematic_features(
         elif col_name == 'tremor_power_8_12hz':
             pass
     return feats
+
+
+def save_scaler_stats(
+    path: str, 
+    global_mean: np.ndarray, 
+    global_std: np.ndarray, 
+    feature_cols: Optional[List[str]] = None
+) -> None:
+    """
+    Saves global normalization statistics to an .npz file for deterministic inference reuse.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    np.savez(
+        path, 
+        mean=global_mean.astype(np.float32), 
+        std=global_std.astype(np.float32), 
+        feature_cols=feature_cols or FEATURE_COLUMNS
+    )
+
+
+def load_scaler_stats(
+    path: str
+) -> Optional[Tuple[np.ndarray, np.ndarray, List[str]]]:
+    """
+    Loads global normalization statistics from an .npz file if present.
+    """
+    if not os.path.exists(path):
+        return None
+    try:
+        data = np.load(path, allow_pickle=True)
+        mean = data['mean'].astype(np.float32)
+        std = data['std'].astype(np.float32)
+        cols = data['feature_cols'].tolist() if 'feature_cols' in data else FEATURE_COLUMNS
+        return mean, std, cols
+    except Exception:
+        return None
 
 
 class CS2TrajectoryDataset(Dataset):
@@ -108,7 +144,7 @@ class CS2TrajectoryDataset(Dataset):
         }
 
 
-def collate_trajectory_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+def collate_trajectory_batch(batch: List[Dict[str, Any]]) -> Dict[str, Union[torch.Tensor, List[str]]]:
     """
     Collates a list of variable-length trajectory samples into a padded batch tensor.
     Returns:
@@ -117,6 +153,7 @@ def collate_trajectory_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, 
         - aimbot_labels: [batch_size, 1]
         - elo_labels: [batch_size, 1]
         - player_ids: [batch_size]
+        - match_ids: List[str] of length batch_size
     """
     batch_size = len(batch)
     lengths = [sample['seq_len'].item() for sample in batch]
@@ -128,6 +165,7 @@ def collate_trajectory_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, 
     aimbot_labels = torch.zeros((batch_size, 1), dtype=torch.float32)
     elo_labels = torch.zeros((batch_size, 1), dtype=torch.float32)
     player_ids = torch.zeros(batch_size, dtype=torch.long)
+    match_ids = []
     
     for i, sample in enumerate(batch):
         slen = lengths[i]
@@ -136,13 +174,15 @@ def collate_trajectory_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, 
         aimbot_labels[i, 0] = sample['aimbot_label']
         elo_labels[i, 0] = sample['elo_label']
         player_ids[i] = sample['player_id']
+        match_ids.append(str(sample.get('match_id', '')))
         
     return {
         'features': padded_features,
         'attention_mask': attention_mask,
         'aimbot_labels': aimbot_labels,
         'elo_labels': elo_labels,
-        'player_ids': player_ids
+        'player_ids': player_ids,
+        'match_ids': match_ids
     }
 
 
@@ -183,7 +223,9 @@ def create_partitioned_dataloaders(
     seed: int = 42,
     feature_cols: Optional[List[str]] = None,
     max_seq_len: int = 512,
-    use_global_norm: bool = True
+    use_global_norm: bool = False,
+    scaler_save_path: Optional[str] = None,
+    scaler_load_path: Optional[str] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Partitions dataset by connected components of Match-ID and Player-ID to strictly prevent data leakage.
@@ -310,8 +352,14 @@ def create_partitioned_dataloaders(
 
         
     global_mean, global_std = None, None
-    if use_global_norm and train_files:
+    if scaler_load_path and os.path.exists(scaler_load_path):
+        loaded = load_scaler_stats(scaler_load_path)
+        if loaded is not None:
+            global_mean, global_std, _ = loaded
+    elif use_global_norm and train_files:
         global_mean, global_std = compute_dataset_statistics(train_files, feature_cols=feature_cols)
+        if scaler_save_path:
+            save_scaler_stats(scaler_save_path, global_mean, global_std, feature_cols=feature_cols)
         
     train_ds = CS2TrajectoryDataset(train_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
     val_ds = CS2TrajectoryDataset(val_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
