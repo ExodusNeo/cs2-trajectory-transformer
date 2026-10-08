@@ -201,7 +201,7 @@ def compute_kinematic_features(
     df : pd.DataFrame
         DataFrame containing 'yaw' (degrees) and 'pitch' (degrees) columns.
     tick_rate : float
-        Frequency of telemetry sampling (default 128.0 Hz).
+        Frequency of telemetry sampling (default 64.0 Hz).
     extract_tremor : bool
         Whether to calculate the 8-12 Hz tremor relative power feature.
         
@@ -210,7 +210,7 @@ def compute_kinematic_features(
     pd.DataFrame with added kinematic columns:
         - angular_velocity (rad/s)
         - angular_accel (rad/s^2)
-        - angular_jerk (rad/s^3)
+        - angular_jerk (rad/s^3, speed-derived scalar angular jerk d^2 omega / dt^2)
         - trajectory_curvature (geodesic unit sphere curvature)
         - curvature_entropy
         - tremor_power_8_12hz
@@ -224,7 +224,11 @@ def compute_kinematic_features(
     # 1. Angular Velocity (Spherical Great-Circle)
     angular_velocity, _, _ = compute_spherical_angular_velocity(pitch_rad, yaw_rad, dt=dt)
     
-    # 2. Angular Acceleration & Minimum-Jerk Metric
+    # Thesis Reference: Chapter 3, Equation (7) & Table 5 — Speed-Derived Scalar Angular Jerk
+    # j_t = d(alpha_t)/dt = d^2(omega_t)/dt^2
+    # Differentiates scalar angular speed omega_t twice over time. It is a speed-derived scalar
+    # kinematic proxy reflecting Flash & Hogan's smoothness principle by penalizing instantaneous
+    # angular acceleration changes and robotic step transitions without requiring unobservable 3D limb coordinates.
     angular_accel = np.gradient(angular_velocity, dt)
     angular_jerk = np.gradient(angular_accel, dt)
     

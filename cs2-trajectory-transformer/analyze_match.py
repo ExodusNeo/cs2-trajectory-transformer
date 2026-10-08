@@ -33,7 +33,7 @@ FEATURE_COLS = [
 ]
 
 
-def load_st_transformer(checkpoint_path: str, device: torch.device):
+def load_st_transformer(checkpoint_path: str, device: torch.device, allow_untrained: bool = False):
     # Thesis Reference: Chapter 3, Table 6 (d_model=128, nhead=8, d_ff=512)
     model = STTrajectoryTransformer(
         feature_dim=len(FEATURE_COLS),
@@ -44,14 +44,28 @@ def load_st_transformer(checkpoint_path: str, device: torch.device):
         dim_feedforward=512
     ).to(device)
 
-    if os.path.exists(checkpoint_path):
-        weights = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    eff_path = checkpoint_path
+    if not os.path.exists(eff_path) and os.path.exists(os.path.join("cs2-trajectory-transformer", eff_path)):
+        eff_path = os.path.join("cs2-trajectory-transformer", eff_path)
+
+    if os.path.exists(eff_path):
+        weights = torch.load(eff_path, map_location=device, weights_only=True)
         model.load_state_dict(weights)
+        print(f"[*] Successfully loaded trained checkpoint from: {eff_path}")
+    elif allow_untrained:
+        import warnings
+        warnings.warn(f"Checkpoint not found at '{checkpoint_path}'. Operating with untrained model weights (--allow_untrained).")
+    else:
+        raise FileNotFoundError(
+            f"Checkpoint file not found: '{checkpoint_path}'. "
+            f"A trained model checkpoint is required for forensic match analysis. "
+            f"Train a model first using train.py or pass --allow_untrained for testing purposes."
+        )
     model.eval()
     return model
 
 
-def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_model.pt"):
+def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_model.pt", allow_untrained: bool = False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     downloader = CS2ReplayDownloader()
 
@@ -88,10 +102,12 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
     print(f"[OK] Ingested {len(ticks_df):,} telemetry ticks across all players in {parse_time:.2f}s.")
 
     # 2. Load Model
-    model = load_st_transformer(model_path, device)
+    model = load_st_transformer(model_path, device, allow_untrained=allow_untrained)
 
     # 3. Load Scaler (if saved during global standardization training)
     scaler_path = model_path.replace('.pt', '_scaler.npz')
+    if not os.path.exists(scaler_path) and os.path.exists(os.path.join("cs2-trajectory-transformer", scaler_path)):
+        scaler_path = os.path.join("cs2-trajectory-transformer", scaler_path)
     global_mean, global_std = None, None
     if os.path.exists(scaler_path):
         loaded = load_scaler_stats(scaler_path)
@@ -199,6 +215,7 @@ def main():
     parser.add_argument("--demo", type=str, default=None, help="Path to local .dem / .dem.zst file")
     parser.add_argument("--faceit_match_id", type=str, default=None, help="Faceit match ID to fetch and analyze")
     parser.add_argument("--model_path", type=str, default="models/checkpoints/best_model.pt", help="Checkpoint path")
+    parser.add_argument("--allow_untrained", action="store_true", help="Allow inference with randomly initialized weights if checkpoint is missing")
     args = parser.parse_args()
 
     if args.faceit_match_id:
@@ -207,14 +224,14 @@ def main():
         print(f"[*] Fetching match replay for Faceit Match ID: {args.faceit_match_id}")
         dems = downloader.fetch_faceit_match_demo(args.faceit_match_id, api_key=api_key)
         if dems:
-            analyze_demo(dems[0], model_path=args.model_path)
+            analyze_demo(dems[0], model_path=args.model_path, allow_untrained=args.allow_untrained)
     elif args.demo:
-        analyze_demo(args.demo, model_path=args.model_path)
+        analyze_demo(args.demo, model_path=args.model_path, allow_untrained=args.allow_untrained)
     else:
         # Default to our downloaded test demo if available
         default_demo = "data/raw_demos/clean/1-1cfcda8f-0d0c-46ee-8863-f746235e48e7-1-1.dem"
         if os.path.exists(default_demo):
-            analyze_demo(default_demo, model_path=args.model_path)
+            analyze_demo(default_demo, model_path=args.model_path, allow_untrained=args.allow_untrained)
         else:
             parser.print_help()
 

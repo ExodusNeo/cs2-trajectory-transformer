@@ -95,6 +95,11 @@ def compute_metrics(
         'Accuracy': float(acc),
         'F1-Score': float(f1),
         'Operating_Threshold': float(operating_threshold),
+        'Window_Total_Count': float(len(y_true)),
+        'Window_Clean_Count': float(n_neg),
+        'Window_FP_Count': float(fp_at_tau),
+        'Window_FPR_at_Tau': fpr_at_tau,
+        'Window_FPR_95_Upper': fpr_95_ci_upper,
         'FPR_at_Operating_Threshold': fpr_at_tau,
         'FPR_95_Upper_Bound': fpr_95_ci_upper,
         'FPR_at_95_TPR': float(fpr_at_95_tpr),
@@ -220,6 +225,7 @@ def evaluate_model_on_loader(
         s_fp = int(np.sum((s_y_true == 0) & (s_y_pred >= operating_threshold)))
         metrics['Session_Total_Count'] = float(len(session_map))
         metrics['Session_Clean_Count'] = float(s_neg)
+        metrics['Session_FP_Count'] = float(s_fp)
         metrics['Session_FPR'] = float(s_fp / max(1, s_neg))
         if s_neg > 0:
             if s_fp == 0:
@@ -308,8 +314,9 @@ def main():
     parser.add_argument("--d_model", type=int, default=128, help="Transformer hidden dimension")
     parser.add_argument("--nhead", type=int, default=8, help="Number of attention heads")
     parser.add_argument("--num_layers", type=int, default=4, help="Number of transformer layers")
-    parser.add_argument("--target_fpr", type=float, default=0.0001, help="Operational target false positive rate (default: 0.0001 = 0.01%)")
+    parser.add_argument("--target_fpr", type=float, default=0.0001, help="Operational target false positive rate (default: 0.0001 = 0.01%%)")
     parser.add_argument("--use_global_norm", action="store_true", help="Use global dataset standardization")
+    parser.add_argument("--allow_untrained", action="store_true", help="Allow evaluation with initialized random weights if checkpoint is missing")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -323,20 +330,35 @@ def main():
         num_layers=args.num_layers, 
         dim_feedforward=args.d_model * 4
     ).to(device)
-    if os.path.exists(args.model_path):
-        checkpoint = torch.load(args.model_path, map_location=device, weights_only=True)
+    model_path = args.model_path
+    if not os.path.exists(model_path) and os.path.exists(os.path.join("cs2-trajectory-transformer", model_path)):
+        model_path = os.path.join("cs2-trajectory-transformer", model_path)
+
+    if os.path.exists(model_path):
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint)
-        print("[*] Successfully loaded checkpoint weights.")
+        print(f"[*] Successfully loaded checkpoint weights from: {model_path}")
+    elif args.allow_untrained:
+        print(f"[!] Warning: Checkpoint not found at {args.model_path}, evaluating with initialized weights (--allow_untrained).")
     else:
-        print(f"[!] Checkpoint not found at {args.model_path}, evaluating with initialized weights.")
+        raise FileNotFoundError(
+            f"Model checkpoint not found: '{args.model_path}'. "
+            f"A trained checkpoint is required to evaluate model performance. "
+            f"Train the model using train.py or pass --allow_untrained to test execution without trained weights."
+        )
 
     # Load dataloaders (checking for saved training scaler)
-    scaler_path = args.model_path.replace('.pt', '_scaler.npz')
+    scaler_path = model_path.replace('.pt', '_scaler.npz')
     scaler_load = scaler_path if os.path.exists(scaler_path) else None
     if scaler_load:
         print(f"[*] Found training scaler statistics at: {scaler_load}")
+
+    data_dir = args.data_dir
+    if not os.path.exists(data_dir) and os.path.exists(os.path.join("cs2-trajectory-transformer", data_dir)):
+        data_dir = os.path.join("cs2-trajectory-transformer", data_dir)
+
     train_loader, val_loader, test_loader = create_partitioned_dataloaders(
-        args.data_dir, 
+        data_dir, 
         batch_size=args.batch_size,
         use_global_norm=args.use_global_norm,
         scaler_load_path=scaler_load

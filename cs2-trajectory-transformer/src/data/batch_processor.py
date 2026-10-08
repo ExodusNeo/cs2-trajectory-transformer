@@ -17,6 +17,12 @@ from .demo_parser import CS2DemoParser
 from .atw_filter import extract_active_tracking_windows
 from features.kinematics import compute_kinematic_features
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 
@@ -25,10 +31,16 @@ def pseudonymize_steamid(steamid: Union[str, int], salt: Optional[str] = None) -
     Thesis Reference: Section 3.3.1 — RA 10173 Cryptographic Pseudonymization.
     Transforms raw 64-bit SteamID to an irreversible 60-bit pseudorandom hash integer:
     h = SHA-256(SteamID || salt)
-    using a managed secret salt (configured via CS2_PSEUDONYMIZATION_SALT environment variable).
+    using a managed secret salt (configured via CS2_PSEUDONYMIZATION_SALT environment variable or salt parameter).
     Obscures direct links to personal profiles and gamer handles, providing pseudonymous telemetry.
+    Strictly enforces presence of secret salt to comply with RA 10173 data privacy governance.
     """
-    effective_salt = salt or os.environ.get("CS2_PSEUDONYMIZATION_SALT") or "cs2-trajectory-transformer-v1"
+    effective_salt = salt or os.environ.get("CS2_PSEUDONYMIZATION_SALT")
+    if not effective_salt:
+        raise ValueError(
+            "Cryptographic pseudonymization under RA 10173 requires a managed secret salt. "
+            "Set the 'CS2_PSEUDONYMIZATION_SALT' environment variable or provide an explicit 'salt' parameter."
+        )
     raw_str = f"{steamid}_{effective_salt}".encode('utf-8')
     h = hashlib.sha256(raw_str).hexdigest()
     # Map first 15 hex characters to positive 60-bit integer (fits PyTorch int64 and Parquet int64)
@@ -39,8 +51,14 @@ def pseudonymize_match_id(match_id: str, salt: Optional[str] = None) -> str:
     """
     Cryptographically pseudonymizes external match identifiers (e.g. FACEIT match UUIDs)
     using a managed secret salt, preventing direct linking against public match scoreboards.
+    Strictly enforces presence of secret salt to comply with RA 10173 data privacy governance.
     """
-    effective_salt = salt or os.environ.get("CS2_PSEUDONYMIZATION_SALT") or "cs2-trajectory-transformer-v1"
+    effective_salt = salt or os.environ.get("CS2_PSEUDONYMIZATION_SALT")
+    if not effective_salt:
+        raise ValueError(
+            "Cryptographic pseudonymization under RA 10173 requires a managed secret salt. "
+            "Set the 'CS2_PSEUDONYMIZATION_SALT' environment variable or provide an explicit 'salt' parameter."
+        )
     raw_str = f"{match_id}_{effective_salt}".encode('utf-8')
     h = hashlib.sha256(raw_str).hexdigest()
     return f"match_{h[:16]}"
@@ -69,7 +87,8 @@ def process_single_demo(
     min_window_len: int = 32,
     tick_rate: float = 64.0,
     use_fov_filter: bool = True,
-    pseudonymize_matches: bool = True
+    pseudonymize_matches: bool = True,
+    salt: Optional[str] = None
 ) -> int:
     """
     Processes a single CS2 .dem replay:
@@ -194,8 +213,8 @@ def process_single_demo(
             if combined_elos:
                 p_elo = combined_elos.get(str(steamid), combined_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
             
-            anon_steamid = pseudonymize_steamid(steamid)
-            anon_match_id = pseudonymize_match_id(match_name) if pseudonymize_matches else match_name
+            anon_steamid = pseudonymize_steamid(steamid, salt=salt)
+            anon_match_id = pseudonymize_match_id(match_name, salt=salt) if pseudonymize_matches else match_name
             for seg_idx, seg_df in enumerate(atw_segments):
                 # Compute 8D biomechanical features at native 64 Hz
                 featured_df = compute_kinematic_features(seg_df, tick_rate=tick_rate, extract_tremor=True)
@@ -230,7 +249,8 @@ def batch_process_demos(
     player_elos_map: Optional[Dict[str, Dict[Union[str, int], float]]] = None,
     tick_rate: float = 64.0,
     max_workers: int = 4,
-    pseudonymize_matches: bool = True
+    pseudonymize_matches: bool = True,
+    salt: Optional[str] = None
 ) -> int:
     """Processes an entire directory of .dem files in parallel."""
     demo_files = glob.glob(os.path.join(demo_dir, "*.dem"))
@@ -244,7 +264,7 @@ def batch_process_demos(
             b_ids = banned_steamids_map.get(m_name) if banned_steamids_map else None
             p_elos = player_elos_map.get(m_name) if player_elos_map else None
             fut = executor.submit(
-                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, 1500.0, 32, tick_rate, True, pseudonymize_matches
+                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, 1500.0, 32, tick_rate, True, pseudonymize_matches, salt
             )
             futures[fut] = demo
             

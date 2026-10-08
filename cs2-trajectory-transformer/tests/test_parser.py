@@ -109,3 +109,40 @@ def test_extract_active_tracking_windows_max_capping():
     assert len(slices) >= 2, "Expected extended engagement to be split into chunks"
     for s in slices:
         assert len(s) <= 512, f"Expected slice <= 512 ticks, got {len(s)}"
+
+
+def test_pseudonymization_with_salt():
+    """Test deterministic cryptographic pseudonymization under Section 3.3.1 (RA 10173)."""
+    from data.batch_processor import pseudonymize_steamid, pseudonymize_match_id
+    
+    steamid = 76561198012345678
+    match_id = "test_match_uuid_12345"
+    salt = "custom_test_salt_987"
+    
+    anon_id1 = pseudonymize_steamid(steamid, salt=salt)
+    anon_id2 = pseudonymize_steamid(steamid, salt=salt)
+    assert anon_id1 == anon_id2, "Pseudonymization must be deterministic with same salt"
+    assert isinstance(anon_id1, int), "Pseudonymized SteamID must be an integer"
+    assert anon_id1 > 0, "Pseudonymized SteamID must be positive"
+    assert anon_id1 < (1 << 60), "Pseudonymized SteamID must fit in 60-bit integer range"
+    
+    anon_match1 = pseudonymize_match_id(match_id, salt=salt)
+    anon_match2 = pseudonymize_match_id(match_id, salt=salt)
+    assert anon_match1 == anon_match2, "Pseudonymized match must be deterministic"
+    assert anon_match1.startswith("match_"), "Pseudonymized match must start with match_ prefix"
+
+
+def test_pseudonymization_missing_salt_raises():
+    """Test that missing managed secret salt raises ValueError under RA 10173 governance."""
+    from data.batch_processor import pseudonymize_steamid, pseudonymize_match_id
+    
+    old_env = os.environ.pop("CS2_PSEUDONYMIZATION_SALT", None)
+    try:
+        with pytest.raises(ValueError, match="managed secret salt"):
+            pseudonymize_steamid(76561198012345678, salt=None)
+            
+        with pytest.raises(ValueError, match="managed secret salt"):
+            pseudonymize_match_id("match_123", salt=None)
+    finally:
+        if old_env is not None:
+            os.environ["CS2_PSEUDONYMIZATION_SALT"] = old_env

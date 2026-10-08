@@ -38,6 +38,7 @@ def main():
     parser = argparse.ArgumentParser(description="Live ST-Trans Inference & Trajectory Evaluation")
     parser.add_argument("--file", type=str, default=None, help="Path to a real .parquet trajectory segment to test")
     parser.add_argument("--model_path", type=str, default="models/checkpoints/best_model.pt", help="Path to checkpoint")
+    parser.add_argument("--allow_untrained", action="store_true", help="Allow running with randomly initialized weights if checkpoint is missing")
     args = parser.parse_args()
 
     print("=" * 75)
@@ -60,12 +61,21 @@ def main():
     )
     
     ckpt_path = args.model_path
+    if not os.path.exists(ckpt_path) and os.path.exists(os.path.join("cs2-trajectory-transformer", ckpt_path)):
+        ckpt_path = os.path.join("cs2-trajectory-transformer", ckpt_path)
+
     if os.path.exists(ckpt_path):
         weights = torch.load(ckpt_path, map_location="cpu", weights_only=True)
         model.load_state_dict(weights)
         print(f"[OK] Successfully loaded TRAINED weights from: {ckpt_path}")
+    elif args.allow_untrained:
+        print(f"[!] Warning: No checkpoint found at {ckpt_path}. Running with random weights (--allow_untrained).")
     else:
-        print(f"[!] Warning: No checkpoint found at {ckpt_path}. Running with random weights.")
+        raise FileNotFoundError(
+            f"Model checkpoint not found: '{args.model_path}'. "
+            f"Trained weights are required for trajectory demonstration. "
+            f"Train the model first using train.py or pass --allow_untrained to test pipeline execution."
+        )
         
     model.eval()
 
