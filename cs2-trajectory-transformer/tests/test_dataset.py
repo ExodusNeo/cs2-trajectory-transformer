@@ -24,14 +24,17 @@ from data.dataset import (
 
 @pytest.fixture
 def sample_parquet_dir():
-    """Generates a temporary directory with synthetic parquet trajectory segments."""
+    """Generates a temporary directory with synthetic parquet trajectory segments across 3 matches."""
     temp_dir = tempfile.mkdtemp()
     
-    # Create files for 4 distinct players across 2 matches
-    players = [76561198000000001, 76561198000000002, 76561198000000003, 76561198000000004]
+    # Create 3 independent matches with distinct player rosters
+    players_by_match = {
+        "match0": [76561198000000001, 76561198000000002],
+        "match1": [76561198000000003, 76561198000000004],
+        "match2": [76561198000000005, 76561198000000006]
+    }
     
-    for match_idx in range(2):
-        match_id = f"match{match_idx}"
+    for match_id, players in players_by_match.items():
         for p in players:
             for seg in range(2):
                 n_ticks = np.random.randint(64, 128)
@@ -64,7 +67,8 @@ def test_dataset_item_loading(sample_parquet_dir):
     files = glob.glob(os.path.join(sample_parquet_dir, "*.parquet"))
     ds = CS2TrajectoryDataset(files)
     
-    assert len(ds) == 16  # 2 matches * 4 players * 2 segments
+    assert len(ds) == 12  # 3 matches * 2 players * 2 segments
+
     sample = ds[0]
     
     assert 'features' in sample

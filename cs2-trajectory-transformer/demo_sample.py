@@ -14,17 +14,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from features.kinematics import compute_kinematic_features
 from models.st_transformer import STTrajectoryTransformer
+from data.dataset import normalize_kinematic_features
 from generate_benchmark_dataset import generate_human_trajectory, generate_cheater_trajectory
 
 
 def preprocess_df(df: pd.DataFrame, feature_cols: list) -> torch.Tensor:
-    """Extracts features, computes kinematics, standardizes, and converts to tensor."""
-    feat_df = compute_kinematic_features(df, tick_rate=128.0, extract_tremor=True)
-    raw_array = feat_df[feature_cols].values
-    mean = np.mean(raw_array, axis=0, keepdims=True)
-    std = np.std(raw_array, axis=0, keepdims=True) + 1e-6
-    norm_array = (raw_array - mean) / std
+    """Extracts features, computes kinematics at native 64 Hz, scales, and converts to tensor."""
+    feat_df = compute_kinematic_features(df, tick_rate=64.0, extract_tremor=True)
+    raw_array = feat_df[feature_cols].values.astype(np.float32)
+    norm_array = normalize_kinematic_features(raw_array, feature_cols)
     return torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0)
+
 
 
 def main():
@@ -70,9 +70,7 @@ def main():
         print("-" * 75)
         df = pd.read_parquet(args.file)
         raw_array = df[feature_cols].values.astype(np.float32)
-        mean = np.mean(raw_array, axis=0, keepdims=True)
-        std = np.std(raw_array, axis=0, keepdims=True) + 1e-6
-        norm_array = (raw_array - mean) / std
+        norm_array = normalize_kinematic_features(raw_array, feature_cols)
         input_tensor = torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
@@ -80,7 +78,7 @@ def main():
 
         verdict = "[AIMBOT DETECTED]" if aim_prob.item() >= 0.5 else "[CLEAN ORGANIC HUMAN]"
         print(f"  > Match / Segment:             {os.path.basename(args.file)}")
-        print(f"  > Length of Engagement:        {len(df)} ticks ({len(df)/128.0:.2f} seconds)")
+        print(f"  > Length of Engagement:        {len(df)} ticks ({len(df)/64.0:.2f} seconds)")
         print(f"  > Aimbot Detection Probability: {aim_prob.item()*100:.2f}% (Verdict: {verdict})")
         print(f"  > Biometric Latent Signature:   32-dim Vector (L2 Norm: {torch.norm(emb).item():.2f})")
         print(f"  > Predicted Player Skill:       {elo_pred.item() * 2000:.0f} ELO")
@@ -91,7 +89,7 @@ def main():
     print("\n" + "-" * 75)
     print("  [TEST 1] SIMULATING ORGANIC HUMAN AIM (Faceit Level 10 Pro / ~2600 ELO)")
     print("-" * 75)
-    human_df = generate_human_trajectory(n_ticks=256, elo=2600.0, tick_rate=128.0)
+    human_df = generate_human_trajectory(n_ticks=256, elo=2600.0, tick_rate=64.0)
     input_human = preprocess_df(human_df, feature_cols)
     
     with torch.no_grad():
@@ -106,8 +104,9 @@ def main():
     print("\n" + "-" * 75)
     print("  [TEST 2] SIMULATING ALGORITHMIC HARDWARE SNAP AIMBOT (DMA Exploit)")
     print("-" * 75)
-    cheat_df = generate_cheater_trajectory(n_ticks=256, cheat_type='snap', tick_rate=128.0)
+    cheat_df = generate_cheater_trajectory(n_ticks=256, cheat_type='snap', tick_rate=64.0)
     input_cheat = preprocess_df(cheat_df, feature_cols)
+
     
     with torch.no_grad():
         aim_prob_c, emb_c, elo_pred_c = model(input_cheat)

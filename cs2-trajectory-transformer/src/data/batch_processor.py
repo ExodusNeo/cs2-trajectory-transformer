@@ -7,6 +7,7 @@ computes 8D micro-kinematic feature vectors, and saves structured Parquet datase
 import os
 import glob
 import logging
+import hashlib
 import numpy as np
 import pandas as pd
 from typing import List, Optional, Dict, Union, Iterable
@@ -17,6 +18,20 @@ from .atw_filter import extract_active_tracking_windows
 from features.kinematics import compute_kinematic_features
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+
+def pseudonymize_steamid(steamid: Union[str, int], salt: str = "cs2-trajectory-transformer-v1") -> int:
+    """
+    Thesis Reference: Section 3.3.1 — RA 10173 Cryptographic Pseudonymization.
+    Transforms raw 64-bit SteamID to an irreversible 60-bit pseudorandom hash integer:
+    h = SHA-256(SteamID || salt)
+    Severing connection to personal gamer handles and public profile URLs.
+    """
+    raw_str = f"{steamid}_{salt}".encode('utf-8')
+    h = hashlib.sha256(raw_str).hexdigest()
+    # Map first 15 hex characters to positive 60-bit integer (fits PyTorch int64 and Parquet int64)
+    return int(h[:15], 16)
+
 
 
 FEATURE_COLUMNS = [
@@ -165,22 +180,24 @@ def process_single_demo(
             if combined_elos:
                 p_elo = combined_elos.get(str(steamid), combined_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
             
+            anon_steamid = pseudonymize_steamid(steamid)
             for seg_idx, seg_df in enumerate(atw_segments):
                 # Compute 8D biomechanical features at native 64 Hz
                 featured_df = compute_kinematic_features(seg_df, tick_rate=tick_rate, extract_tremor=True)
                 
-                # Metadata tags
+                # Metadata tags (RA 10173 Cryptographically Pseudonymized)
                 featured_df['match_id'] = match_name
-                featured_df['steamid'] = steamid
+                featured_df['steamid'] = anon_steamid
                 featured_df['segment_id'] = seg_idx
                 featured_df['is_aimbot'] = is_player_cheater
                 featured_df['player_elo'] = float(p_elo)
                 
                 # Export to Parquet
-                out_filename = f"{match_name}_p{steamid}_seg{seg_idx}.parquet"
+                out_filename = f"{match_name}_p{anon_steamid}_seg{seg_idx}.parquet"
                 out_path = os.path.join(output_dir, out_filename)
                 featured_df.to_parquet(out_path, index=False)
                 total_segments += 1
+
                 
         logging.info(f"Processed {match_name}: {total_segments} ATW segments extracted.")
         return total_segments

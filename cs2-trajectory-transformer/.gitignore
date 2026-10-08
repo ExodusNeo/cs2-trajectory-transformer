@@ -60,6 +60,7 @@ models/checkpoints/
 *.tar.gz
 data/
 **/data/
+!src/data/
 processed_parquet/
 **/processed_parquet/
 raw_demos/

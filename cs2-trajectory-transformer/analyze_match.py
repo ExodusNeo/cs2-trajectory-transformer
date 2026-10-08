@@ -22,10 +22,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 from data.demo_parser import CS2DemoParser
 from data.demo_downloader import CS2ReplayDownloader
 from data.atw_filter import extract_active_tracking_windows
+from data.dataset import normalize_kinematic_features
 from features.kinematics import compute_kinematic_features
 from models.st_transformer import STTrajectoryTransformer
 
 FEATURE_COLS = [
+
     'yaw', 'pitch', 'angular_velocity', 'angular_accel',
     'angular_jerk', 'trajectory_curvature', 'curvature_entropy', 'tremor_power_8_12hz'
 ]
@@ -117,11 +119,9 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
         suspicious_segments = []
 
         for seg_idx, seg_df in enumerate(atws):
-            feat_df = compute_kinematic_features(seg_df, tick_rate=128.0, extract_tremor=True)
+            feat_df = compute_kinematic_features(seg_df, tick_rate=64.0, extract_tremor=True)
             raw_array = feat_df[FEATURE_COLS].values.astype(np.float32)
-            mean = np.mean(raw_array, axis=0, keepdims=True)
-            std = np.std(raw_array, axis=0, keepdims=True) + 1e-6
-            norm_array = (raw_array - mean) / std
+            norm_array = normalize_kinematic_features(raw_array, FEATURE_COLS)
             input_tensor = torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0).to(device)
 
             with torch.no_grad():

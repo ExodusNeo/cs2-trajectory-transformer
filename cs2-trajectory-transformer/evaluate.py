@@ -29,19 +29,41 @@ from models.st_transformer import STTrajectoryTransformer
 from data.dataset import create_partitioned_dataloaders
 
 
-def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, float]:
+def calibrate_operating_threshold(
+    y_val: np.ndarray, 
+    y_val_prob: np.ndarray, 
+    target_fpr: float = 0.001
+) -> float:
+    """
+    Calibrates operational decision threshold tau* on the validation partition.
+    Ensures empirical validation FPR <= target_fpr while maximizing sensitivity.
+    """
+    if len(set(y_val)) <= 1:
+        return 0.5
+    fpr, tpr, thresholds = roc_curve(y_val, y_val_prob)
+    valid_indices = np.where(fpr <= target_fpr)[0]
+    if len(valid_indices) > 0:
+        best_idx = valid_indices[-1]
+        return float(thresholds[best_idx])
+    return 0.95
+
+
+def compute_metrics(
+    y_true: np.ndarray, 
+    y_pred_prob: np.ndarray,
+    operating_threshold: float = 0.5
+) -> Dict[str, float]:
     """Computes key thesis metrics from predictions and ground truth."""
     auroc = roc_auc_score(y_true, y_pred_prob) if len(set(y_true)) > 1 else 0.5
     auprc = average_precision_score(y_true, y_pred_prob) if len(set(y_true)) > 1 else 0.0
     
-    # Standard 0.5 threshold
-    y_pred_bin = (y_pred_prob >= 0.5).astype(int)
+    # Calibrated decision threshold classification
+    y_pred_bin = (y_pred_prob >= operating_threshold).astype(int)
     acc = accuracy_score(y_true, y_pred_bin)
     f1 = f1_score(y_true, y_pred_bin, zero_division=0)
     
-    # Calculate False Positive Rate at high sensitivity
+    # Calculate False Positive Rate at high sensitivity (95% TPR)
     fpr, tpr, thresholds = roc_curve(y_true, y_pred_prob)
-    # Find operating point where TPR >= 0.95
     idx_95 = np.argmax(tpr >= 0.95) if (tpr >= 0.95).any() else -1
     fpr_at_95_tpr = float(fpr[idx_95]) if idx_95 != -1 else 1.0
     
@@ -53,17 +75,17 @@ def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, fl
     idx_strict_fpr = np.where(fpr <= 0.0001)[0]
     tpr_at_strict_fpr = float(tpr[idx_strict_fpr[-1]]) if len(idx_strict_fpr) > 0 else 0.0
     
-    # Statistical Confidence Bound on False Positive Rate (Rule of Three / Clopper-Pearson 95% CI)
+    # Statistical Confidence Bound on False Positive Rate at operating threshold
     n_neg = int(np.sum(y_true == 0))
-    fp_at_05 = int(np.sum((y_true == 0) & (y_pred_bin == 1)))
-    fpr_at_05 = float(fp_at_05 / max(1, n_neg))
+    fp_at_tau = int(np.sum((y_true == 0) & (y_pred_bin == 1)))
+    fpr_at_tau = float(fp_at_tau / max(1, n_neg))
     if n_neg > 0:
-        if fp_at_05 == 0:
+        if fp_at_tau == 0:
             # Rule of Three: -ln(0.05) / N ~ 3 / N
             fpr_95_ci_upper = float(3.0 / n_neg)
         else:
             from scipy.stats import beta
-            fpr_95_ci_upper = float(beta.ppf(0.95, fp_at_05 + 1, n_neg - fp_at_05))
+            fpr_95_ci_upper = float(beta.ppf(0.95, fp_at_tau + 1, n_neg - fp_at_tau))
     else:
         fpr_95_ci_upper = 1.0
     
@@ -72,20 +94,23 @@ def compute_metrics(y_true: np.ndarray, y_pred_prob: np.ndarray) -> Dict[str, fl
         'AUPRC': float(auprc),
         'Accuracy': float(acc),
         'F1-Score': float(f1),
+        'Operating_Threshold': float(operating_threshold),
+        'FPR_at_Operating_Threshold': fpr_at_tau,
+        'FPR_95_Upper_Bound': fpr_95_ci_upper,
         'FPR_at_95_TPR': float(fpr_at_95_tpr),
         'TPR_at_0.1%_FPR': float(tpr_at_low_fpr),
         'TPR_at_0.01%_FPR': float(tpr_at_strict_fpr),
-        'FPR_at_0.5_Threshold': fpr_at_05,
-        'FPR_95_Upper_Bound': fpr_95_ci_upper,
         'Negative_Samples': n_neg
     }
+
 
 
 
 def evaluate_model_on_loader(
     model: torch.nn.Module, 
     dataloader, 
-    device: torch.device
+    device: torch.device,
+    operating_threshold: float = 0.5
 ) -> Tuple[Dict[str, float], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Runs inference across dataloader and calculates metrics."""
     model.eval()
@@ -119,7 +144,7 @@ def evaluate_model_on_loader(
     embeddings = np.vstack(all_embeddings) if all_embeddings else np.array([])
     player_ids = np.array(all_player_ids)
     
-    metrics = compute_metrics(y_true, y_pred)
+    metrics = compute_metrics(y_true, y_pred, operating_threshold=operating_threshold)
     elo_mae = float(np.mean(np.abs(np.array(all_elo_preds) - np.array(all_elo_targets))))
     metrics['ELO_MAE'] = elo_mae
     
@@ -163,8 +188,43 @@ def evaluate_model_on_loader(
         except Exception:
             metrics['Biometric_P@1'] = 0.0
             metrics['Biometric_P@5'] = 0.0
+
+    # Cluster-aware session evaluation (Match-Player unit)
+    if len(all_player_ids) == len(all_preds) and len(all_player_ids) > 0:
+        session_map = {}
+        for idx in range(len(all_preds)):
+            pid = all_player_ids[idx]
+            if pid not in session_map:
+                session_map[pid] = {'targets': [], 'preds': []}
+            session_map[pid]['targets'].append(all_targets[idx])
+            session_map[pid]['preds'].append(all_preds[idx])
+            
+        session_targets = []
+        session_peak_preds = []
+        for pid, s_data in session_map.items():
+            session_targets.append(int(max(s_data['targets'])))
+            session_peak_preds.append(float(max(s_data['preds'])))
+            
+        s_y_true = np.array(session_targets)
+        s_y_pred = np.array(session_peak_preds)
+        if len(set(s_y_true)) > 1:
+            metrics['Session_AUROC'] = float(roc_auc_score(s_y_true, s_y_pred))
+        s_neg = int(np.sum(s_y_true == 0))
+        s_fp = int(np.sum((s_y_true == 0) & (s_y_pred >= operating_threshold)))
+        metrics['Session_Total_Count'] = float(len(session_map))
+        metrics['Session_Clean_Count'] = float(s_neg)
+        metrics['Session_FPR'] = float(s_fp / max(1, s_neg))
+        if s_neg > 0:
+            if s_fp == 0:
+                metrics['Session_FPR_95_Upper'] = float(3.0 / s_neg)
+            else:
+                from scipy.stats import beta
+                metrics['Session_FPR_95_Upper'] = float(beta.ppf(0.95, s_fp + 1, s_neg - s_fp))
+        else:
+            metrics['Session_FPR_95_Upper'] = 1.0
     
     return metrics, y_true, y_pred, embeddings, player_ids
+
 
 
 
@@ -261,18 +321,29 @@ def main():
     else:
         print(f"[!] Checkpoint not found at {args.model_path}, evaluating with initialized weights.")
 
-    # Load test dataloader
-    _, _, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
-    print(f"[*] Test dataset size: {len(test_loader.dataset)} segments ({len(test_loader)} batches)")
+    # Load dataloaders
+    train_loader, val_loader, test_loader = create_partitioned_dataloaders(args.data_dir, batch_size=args.batch_size)
+    print(f"[*] Partitions: Val={len(val_loader.dataset)} segments, Test={len(test_loader.dataset)} segments")
 
-    metrics, y_true, y_pred, embeddings, player_ids = evaluate_model_on_loader(model, test_loader, device)
+    # 1. Calibrate operational decision threshold tau* on validation partition
+    print("[*] Calibrating operational decision threshold on validation set...")
+    val_metrics, val_true, val_pred, _, _ = evaluate_model_on_loader(model, val_loader, device)
+    calibrated_tau = calibrate_operating_threshold(val_true, val_pred, target_fpr=0.001)
+    print(f"[*] Calibrated operating threshold tau*: {calibrated_tau:.4f}")
+
+    # 2. Evaluate on held-out test partition using calibrated threshold
+    print(f"[*] Evaluating on held-out test dataset with tau*={calibrated_tau:.4f}...")
+    metrics, y_true, y_pred, embeddings, player_ids = evaluate_model_on_loader(
+        model, test_loader, device, operating_threshold=calibrated_tau
+    )
 
     print("\n" + "=" * 50)
     print("      THESIS EVALUATION METRICS (TEST SET)      ")
     print("=" * 50)
     for k, v in metrics.items():
-        print(f"  > {k:<18}: {v:.4f}")
+        print(f"  > {k:<28}: {v:.4f}")
     print("=" * 50)
+
 
     # Inference Latency Profiling
     print("\n[*] Profiling Server-Side Inference Latency...")

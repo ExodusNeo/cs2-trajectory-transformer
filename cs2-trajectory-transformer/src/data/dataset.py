@@ -27,6 +27,37 @@ FEATURE_COLUMNS = [
 ]
 
 
+def normalize_kinematic_features(
+    feats: np.ndarray, 
+    feature_cols: List[str], 
+    global_mean: Optional[np.ndarray] = None, 
+    global_std: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """
+    Standardizes or robustly scales kinematic features across ATW segments.
+    Preserves absolute amplitude of superhuman jerk and near-zero tremor without per-window collapse.
+    """
+    feats = feats.copy()
+    if global_mean is not None and global_std is not None:
+        return (feats - global_mean) / (global_std + 1e-6)
+    
+    for col_idx, col_name in enumerate(feature_cols):
+        if col_name in ['yaw', 'pitch']:
+            feats[:, col_idx] = feats[:, col_idx] / np.pi
+        elif col_name == 'angular_velocity':
+            feats[:, col_idx] = np.log1p(np.maximum(0.0, feats[:, col_idx]))
+        elif col_name in ['angular_accel', 'angular_jerk']:
+            sign = np.sign(feats[:, col_idx])
+            feats[:, col_idx] = sign * np.log1p(np.abs(feats[:, col_idx]))
+        elif col_name == 'trajectory_curvature':
+            feats[:, col_idx] = np.clip(feats[:, col_idx] / 10.0, 0.0, 5.0)
+        elif col_name == 'curvature_entropy':
+            feats[:, col_idx] = feats[:, col_idx] / 3.3219
+        elif col_name == 'tremor_power_8_12hz':
+            pass
+    return feats
+
+
 class CS2TrajectoryDataset(Dataset):
     """
     PyTorch Dataset loading preprocessed ATW Parquet trajectory segments.
@@ -59,28 +90,10 @@ class CS2TrajectoryDataset(Dataset):
         feats = feats[:seq_len]
         
         if self.normalize:
-            if self.global_mean is not None and self.global_std is not None:
-                # Global dataset standardization (preserves relative amplitude across segments)
-                feats = (feats - self.global_mean) / (self.global_std + 1e-6)
-            else:
-                # Domain-aware robust scaling: preserves superhuman speed / jerk peaks without per-window collapse
-                for col_idx, col_name in enumerate(self.feature_cols):
-                    if col_name in ['yaw', 'pitch']:
-                        feats[:, col_idx] = feats[:, col_idx] / np.pi
-                    elif col_name == 'angular_velocity':
-                        feats[:, col_idx] = np.log1p(np.maximum(0.0, feats[:, col_idx]))
-                    elif col_name in ['angular_accel', 'angular_jerk']:
-                        sign = np.sign(feats[:, col_idx])
-                        feats[:, col_idx] = sign * np.log1p(np.abs(feats[:, col_idx]))
-                    elif col_name == 'trajectory_curvature':
-                        feats[:, col_idx] = np.clip(feats[:, col_idx] / 10.0, 0.0, 5.0)
-                    elif col_name == 'curvature_entropy':
-                        feats[:, col_idx] = feats[:, col_idx] / 3.3219
-                    elif col_name == 'tremor_power_8_12hz':
-                        # Already strictly bounded in [0.0, 1.0]
-                        pass
+            feats = normalize_kinematic_features(feats, self.feature_cols, self.global_mean, self.global_std)
             
         aimbot_label = float(df['is_aimbot'].iloc[0]) if 'is_aimbot' in df.columns else 0.0
+
         elo_label = float(df['player_elo'].iloc[0]) / 2000.0 if 'player_elo' in df.columns else 0.75
         player_id = int(df['steamid'].iloc[0]) if 'steamid' in df.columns else 0
         match_id = str(df['match_id'].iloc[0]) if 'match_id' in df.columns else ""
@@ -248,52 +261,53 @@ def create_partitioned_dataloaders(
         test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
     else:
         # Fallback for datasets where graph connectivity creates fewer than 3 disjoint components:
-        # Partition by match and filter cross-match players to guarantee joint disjointness (Eq 18):
+        # Search match allocations that produce non-empty partitions while strictly enforcing:
         # M_train ∩ M_test = ∅ AND P_train ∩ P_test = ∅
         unique_matches = np.array(sorted(df_meta['match_id'].unique()))
-        rng.shuffle(unique_matches)
         n_m = len(unique_matches)
-        n_train = max(1, int(n_m * train_ratio))
-        n_val = max(1, int(n_m * val_ratio))
-        if n_train + n_val >= n_m:
-            n_train = max(1, n_m - 2)
-            n_val = 1
+        if n_m < 3:
+            raise ValueError(
+                f"Strict joint zero-leakage partitioning requires at least 3 distinct matches, "
+                f"but found only {n_m}. Cannot create disjoint Train, Val, and Test partitions."
+            )
             
-        train_m_set = set(unique_matches[:n_train])
-        val_m_set = set(unique_matches[n_train:n_train + n_val])
-        test_m_set = set(unique_matches[n_train + n_val:])
-        
-        # Enforce zero-leakage player filtering across match partitions
-        train_df = df_meta[df_meta['match_id'].isin(train_m_set)]
-        train_p = set(train_df['steamid'].unique())
-        
-        val_df = df_meta[df_meta['match_id'].isin(val_m_set) & (~df_meta['steamid'].isin(train_p))]
-        val_p = set(val_df['steamid'].unique())
-        
-        test_df = df_meta[df_meta['match_id'].isin(test_m_set) & (~df_meta['steamid'].isin(train_p | val_p))]
-        
-        # If strict match-disjoint filtering leaves val or test empty (tight multi-match overlap),
-        # fallback to strict player-ID disjoint partitioning
-        if len(test_df) == 0 or len(val_df) == 0:
-            unique_players = np.array(sorted(df_meta['steamid'].unique()))
-            rng.shuffle(unique_players)
-            n_players = len(unique_players)
-            n_p_train = max(1, int(n_players * train_ratio))
-            n_p_val = max(1, int(n_players * val_ratio))
-            if n_p_train + n_p_val >= n_players:
-                n_p_train = max(1, n_players - 2)
-                n_p_val = 1
-            train_p_set = set(unique_players[:n_p_train])
-            val_p_set = set(unique_players[n_p_train:n_p_train + n_p_val])
-            test_p_set = set(unique_players[n_p_train + n_p_val:])
+        found_split = False
+        for attempt in range(100):
+            rng.shuffle(unique_matches)
+            n_train = max(1, int(n_m * train_ratio))
+            n_val = max(1, int(n_m * val_ratio))
+            if n_train + n_val >= n_m:
+                n_train = max(1, n_m - 2)
+                n_val = 1
+                
+            train_m_set = set(unique_matches[:n_train])
+            val_m_set = set(unique_matches[n_train:n_train + n_val])
+            test_m_set = set(unique_matches[n_train + n_val:])
             
-            train_files = df_meta[df_meta['steamid'].isin(train_p_set)]['fpath'].tolist()
-            val_files = df_meta[df_meta['steamid'].isin(val_p_set)]['fpath'].tolist()
-            test_files = df_meta[df_meta['steamid'].isin(test_p_set)]['fpath'].tolist()
-        else:
-            train_files = train_df['fpath'].tolist()
-            val_files = val_df['fpath'].tolist()
-            test_files = test_df['fpath'].tolist()
+            # Enforce zero-leakage player filtering across match partitions
+            train_df = df_meta[df_meta['match_id'].isin(train_m_set)]
+            train_p = set(train_df['steamid'].unique())
+            
+            val_df = df_meta[df_meta['match_id'].isin(val_m_set) & (~df_meta['steamid'].isin(train_p))]
+            val_p = set(val_df['steamid'].unique())
+            
+            test_df = df_meta[df_meta['match_id'].isin(test_m_set) & (~df_meta['steamid'].isin(train_p | val_p))]
+            
+            if len(val_df) > 0 and len(test_df) > 0:
+                train_files = train_df['fpath'].tolist()
+                val_files = val_df['fpath'].tolist()
+                test_files = test_df['fpath'].tolist()
+                found_split = True
+                break
+                
+        if not found_split:
+            raise ValueError(
+                "Strict joint zero-leakage partitioning constraint violated: "
+                "M_train ∩ M_test = ∅ AND P_train ∩ P_test = ∅. "
+                "The match-player connectivity graph is too densely connected across the current matches "
+                "to yield disjoint non-empty partitions. Additional independent matches are required."
+            )
+
         
     global_mean, global_std = None, None
     if use_global_norm and train_files:
