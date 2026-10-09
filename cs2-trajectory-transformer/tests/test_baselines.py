@@ -43,3 +43,30 @@ def test_classical_baselines_fit_predict():
     assert ('Gradient Boosting' in preds or 'XGBoost' in preds)
     assert 'MLP' in preds
     assert len(preds['Random Forest']) == 10
+
+
+def test_cluster_bootstrap_and_design_effect():
+    """Test cluster bootstrap and design effect statistical calculations in evaluate.py."""
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from evaluate import compute_cluster_bootstrap_bounds, compute_design_effect
+    
+    cluster_ids = ['m1', 'm1', 'm1', 'm2', 'm2', 'm3', 'm3']
+    y_true = np.array([0, 0, 0, 0, 0, 0, 0])
+    y_pred = np.array([0.01, 0.02, 0.01, 0.03, 0.02, 0.01, 0.02])
+    
+    # Zero false positives case
+    boot_upper = compute_cluster_bootstrap_bounds(cluster_ids, y_true, y_pred, threshold=0.5, n_bootstraps=100)
+    assert 0.0 < boot_upper <= 1.0
+    
+    rho, deff, n_eff, adj_upper = compute_design_effect(cluster_ids, y_true, y_pred, threshold=0.5)
+    assert rho == 0.0
+    assert deff == 1.0
+    assert n_eff == 7.0
+    assert 0.0 < adj_upper <= 1.0
+    
+    # Case with clustered false positives
+    y_pred_with_fp = np.array([0.8, 0.9, 0.85, 0.01, 0.02, 0.01, 0.02])
+    rho2, deff2, n_eff2, adj_upper2 = compute_design_effect(cluster_ids, y_true, y_pred_with_fp, threshold=0.5)
+    assert rho2 > 0.0
+    assert deff2 > 1.0
+    assert n_eff2 < 7.0

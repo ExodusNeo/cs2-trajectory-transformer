@@ -21,7 +21,8 @@ from sklearn.metrics import (
     accuracy_score,
     roc_curve
 )
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List, Optional
+from scipy.stats import beta, spearmanr
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
@@ -171,6 +172,83 @@ def compute_cluster_bootstrap_bounds(
     return percentile_95
 
 
+def compute_design_effect(
+    cluster_ids: List[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    threshold: float
+) -> Tuple[float, float, float, float]:
+    """
+    Thesis Reference: Chapter 3, Section 3.2.9 — Design-Effect Adjustment
+    Computes intra-cluster correlation (rho_hat), average cluster size (m_bar),
+    design effect (Deff = 1 + (m_bar - 1) * rho_hat), effective sample size (N_eff),
+    and adjusted 95% upper bound on False Positive Rate.
+    
+    Returns:
+    --------
+    (rho_hat, deff, n_eff, adjusted_fpr_95_upper)
+    """
+    c_arr = np.array(cluster_ids)
+    unique_clusters = np.unique(c_arr)
+    
+    clean_counts = []
+    fp_counts = []
+    for cid in unique_clusters:
+        mask = (c_arr == cid)
+        c_true = y_true[mask]
+        c_pred = y_pred[mask]
+        neg_mask = (c_true == 0)
+        c_clean = int(np.sum(neg_mask))
+        c_fp = int(np.sum(neg_mask & (c_pred >= threshold)))
+        clean_counts.append(c_clean)
+        fp_counts.append(c_fp)
+        
+    clean_arr = np.array(clean_counts)
+    fp_arr = np.array(fp_counts)
+    total_clean = int(np.sum(clean_arr))
+    total_fp = int(np.sum(fp_arr))
+    
+    if total_clean <= 0 or len(unique_clusters) <= 1:
+        return 0.0, 1.0, float(total_clean), (3.0 / max(1, total_clean) if total_fp == 0 else 1.0)
+        
+    K = len(unique_clusters)
+    p_hat = total_fp / total_clean
+    m_bar = float(total_clean / K)
+    
+    # If 0 false positives observed across all clusters, rho_hat = 0.0 and Deff = 1.0
+    if total_fp == 0 or p_hat == 0.0 or p_hat >= 1.0:
+        rho_hat = 0.0
+        deff = 1.0
+        n_eff = float(total_clean)
+        adj_upper = float(3.0 / max(1.0, n_eff))
+        return rho_hat, deff, n_eff, adj_upper
+        
+    # ANOVA estimate of intra-cluster correlation coefficient (ICC)
+    m_0 = float((total_clean - np.sum(clean_arr ** 2) / total_clean) / max(1, K - 1))
+    
+    cluster_rates = np.zeros(K, dtype=np.float64)
+    valid_c = clean_arr > 0
+    cluster_rates[valid_c] = fp_arr[valid_c] / clean_arr[valid_c]
+    
+    ssb = float(np.sum(clean_arr * (cluster_rates - p_hat) ** 2))
+    msb = ssb / max(1, K - 1)
+    
+    sst = float(total_clean * p_hat * (1.0 - p_hat))
+    ssw = max(0.0, sst - ssb)
+    msw = ssw / max(1, total_clean - K)
+    
+    denom = msb + (m_0 - 1.0) * msw
+    if denom > 1e-9:
+        rho_hat = float(max(0.0, min(1.0, (msb - msw) / denom)))
+    else:
+        rho_hat = 0.0
+        
+    deff = float(max(1.0, 1.0 + (m_bar - 1.0) * rho_hat))
+    n_eff = float(max(1.0, total_clean / deff))
+    adj_upper = float(beta.ppf(0.95, total_fp + 1, max(1.0, n_eff - total_fp)))
+    return rho_hat, deff, n_eff, adj_upper
+
+
 def evaluate_model_on_loader(
     model: torch.nn.Module, 
     dataloader, 
@@ -300,14 +378,75 @@ def evaluate_model_on_loader(
         metrics['Session_Nominal_FPR_95_Upper'] = s_nominal_upper
         metrics['Session_FPR_95_Upper'] = s_nominal_upper
 
-        # Dependence-Aware Cluster Bootstrap Bounds over independent match clusters
+        # Dependence-Aware Cluster Bootstrap & Design-Effect Bounds
         if any(m for m in all_match_ids):
+            # 1. Match Cluster Bootstrap (Windows and Sessions)
             metrics['Window_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
                 all_match_ids, y_true, y_pred, operating_threshold
             )
             metrics['Session_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
                 session_match_ids, s_y_true, s_y_pred, operating_threshold
             )
+            
+            # 2. Design-Effect Adjustment (ICC rho_hat, Deff, N_eff)
+            w_rho, w_deff, w_neff, w_adj_upper = compute_design_effect(
+                all_match_ids, y_true, y_pred, operating_threshold
+            )
+            metrics['Window_ICC_Rho'] = w_rho
+            metrics['Window_Design_Effect'] = w_deff
+            metrics['Window_Effective_Sample_Size'] = w_neff
+            metrics['Window_Design_Effect_Adjusted_FPR_95_Upper'] = w_adj_upper
+            
+            s_rho, s_deff, s_neff, s_adj_upper = compute_design_effect(
+                session_match_ids, s_y_true, s_y_pred, operating_threshold
+            )
+            metrics['Session_ICC_Rho'] = s_rho
+            metrics['Session_Design_Effect'] = s_deff
+            metrics['Session_Effective_Sample_Size'] = s_neff
+            metrics['Session_Design_Effect_Adjusted_FPR_95_Upper'] = s_adj_upper
+
+        # 3. Player-Level Cluster Bootstrap (accounting for repeated player accounts across matches)
+        if len(all_player_ids) > 0 and len(np.unique(all_player_ids)) > 1:
+            metrics['Window_Player_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
+                [str(p) for p in all_player_ids], y_true, y_pred, operating_threshold
+            )
+
+    # 4. Match-Level Evaluation (Match cluster unit — Rule of Three over independent clean matches)
+    if any(m for m in all_match_ids):
+        match_map = {}
+        for idx in range(len(all_preds)):
+            mid = all_match_ids[idx] if idx < len(all_match_ids) and all_match_ids[idx] else ''
+            if not mid:
+                continue
+            if mid not in match_map:
+                match_map[mid] = {'targets': [], 'preds': []}
+            match_map[mid]['targets'].append(all_targets[idx])
+            match_map[mid]['preds'].append(all_preds[idx])
+            
+        if len(match_map) > 0:
+            m_targets = []
+            m_peak_preds = []
+            for mid, m_data in match_map.items():
+                m_targets.append(int(max(m_data['targets'])))
+                m_peak_preds.append(float(max(m_data['preds'])))
+                
+            m_y_true = np.array(m_targets)
+            m_y_pred = np.array(m_peak_preds)
+            m_neg = int(np.sum(m_y_true == 0))
+            m_fp = int(np.sum((m_y_true == 0) & (m_y_pred >= operating_threshold)))
+            
+            metrics['Match_Total_Count'] = float(len(match_map))
+            metrics['Match_Clean_Count'] = float(m_neg)
+            metrics['Match_FP_Count'] = float(m_fp)
+            metrics['Match_FPR'] = float(m_fp / max(1, m_neg))
+            if m_neg > 0:
+                if m_fp == 0:
+                    m_nominal_upper = float(3.0 / m_neg)
+                else:
+                    m_nominal_upper = float(beta.ppf(0.95, m_fp + 1, m_neg - m_fp))
+            else:
+                m_nominal_upper = 1.0
+            metrics['Match_Nominal_FPR_95_Upper'] = m_nominal_upper
     
     return metrics, y_true, y_pred, embeddings, player_ids
 
@@ -454,12 +593,12 @@ def main():
     print("           THESIS EVALUATION METRICS (TEST SET)           ")
     print("=" * 65)
     for k, v in metrics.items():
-        if isinstance(v, (int, np.integer)) or ('_Count' in k and isinstance(v, (int, float)) and v == int(v)):
-            print(f"  > {k:<40}: {int(v)}")
+        if isinstance(v, (int, np.integer)) or (('_Count' in k or '_Size' in k or 'Negative_Samples' in k) and isinstance(v, (int, float)) and v == int(v)):
+            print(f"  > {k:<45}: {int(v)}")
         elif 'FPR' in k:
-            print(f"  > {k:<40}: {v:.6f} ({v*100:.4f}%)")
+            print(f"  > {k:<45}: {v:.6f} ({v*100:.4f}%)")
         else:
-            print(f"  > {k:<40}: {v:.4f}")
+            print(f"  > {k:<45}: {v:.4f}")
     print("=" * 65)
 
 
