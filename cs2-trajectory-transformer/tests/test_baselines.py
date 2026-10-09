@@ -54,14 +54,14 @@ def test_cluster_bootstrap_and_design_effect():
     y_true = np.array([0, 0, 0, 0, 0, 0, 0])
     y_pred = np.array([0.01, 0.02, 0.01, 0.03, 0.02, 0.01, 0.02])
     
-    # Zero false positives case
+    # Zero false positives case (score-derived ICC)
     boot_upper = compute_cluster_bootstrap_bounds(cluster_ids, y_true, y_pred, threshold=0.5, n_bootstraps=100)
     assert 0.0 < boot_upper <= 1.0
     
     rho, deff, n_eff, adj_upper = compute_design_effect(cluster_ids, y_true, y_pred, threshold=0.5)
-    assert rho == 0.0
-    assert deff == 1.0
-    assert n_eff == 7.0
+    assert 0.0 <= rho <= 1.0
+    assert deff >= 1.0
+    assert 0.0 < n_eff <= 7.0
     assert 0.0 < adj_upper <= 1.0
     
     # Case with clustered false positives

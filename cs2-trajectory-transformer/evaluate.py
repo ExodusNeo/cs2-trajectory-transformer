@@ -215,17 +215,42 @@ def compute_design_effect(
     p_hat = total_fp / total_clean
     m_bar = float(total_clean / K)
     
-    # If 0 false positives observed across all clusters, rho_hat = 0.0 and Deff = 1.0
-    if total_fp == 0 or p_hat == 0.0 or p_hat >= 1.0:
-        rho_hat = 0.0
-        deff = 1.0
-        n_eff = float(total_clean)
-        adj_upper = float(3.0 / max(1.0, n_eff))
-        return rho_hat, deff, n_eff, adj_upper
-        
-    # ANOVA estimate of intra-cluster correlation coefficient (ICC)
+    # Effective cluster size weighting constant for unequal cluster sizes (Donner & Klar, 2000)
     m_0 = float((total_clean - np.sum(clean_arr ** 2) / total_clean) / max(1, K - 1))
     
+    # When 0 binary false alarms are observed, binary sample variance is zero.
+    # Rather than falling back to independence, estimate latent intra-cluster correlation (rho_hat)
+    # from the continuous model anomaly scores of clean negative windows across clusters.
+    if total_fp == 0 or p_hat == 0.0 or p_hat >= 1.0:
+        neg_mask_all = (y_true == 0)
+        clean_scores = y_pred[neg_mask_all]
+        clean_c_arr = c_arr[neg_mask_all]
+        
+        grand_mean = float(np.mean(clean_scores)) if len(clean_scores) > 0 else 0.0
+        ssb_s = 0.0
+        ssw_s = 0.0
+        for cid in unique_clusters:
+            c_mask = (clean_c_arr == cid)
+            c_s = clean_scores[c_mask]
+            if len(c_s) > 0:
+                c_m = float(np.mean(c_s))
+                ssb_s += len(c_s) * (c_m - grand_mean) ** 2
+                ssw_s += float(np.sum((c_s - c_m) ** 2))
+                
+        msb_s = ssb_s / max(1, K - 1)
+        msw_s = ssw_s / max(1, total_clean - K)
+        denom_s = msb_s + (m_0 - 1.0) * msw_s
+        if denom_s > 1e-9:
+            rho_hat = float(max(0.0, min(1.0, (msb_s - msw_s) / denom_s)))
+        else:
+            rho_hat = 0.0
+            
+        deff = float(max(1.0, 1.0 + (m_bar - 1.0) * rho_hat))
+        n_eff = float(max(1.0, total_clean / deff))
+        adj_upper = float(3.0 / n_eff)
+        return rho_hat, deff, n_eff, adj_upper
+        
+    # ANOVA estimate of intra-cluster correlation coefficient (ICC) on binary false alarms
     cluster_rates = np.zeros(K, dtype=np.float64)
     valid_c = clean_arr > 0
     cluster_rates[valid_c] = fp_arr[valid_c] / clean_arr[valid_c]
@@ -381,21 +406,23 @@ def evaluate_model_on_loader(
         # Dependence-Aware Cluster Bootstrap & Design-Effect Bounds
         if any(m for m in all_match_ids):
             # 1. Match Cluster Bootstrap (Windows and Sessions)
-            metrics['Window_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
+            metrics['Window_Match_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
                 all_match_ids, y_true, y_pred, operating_threshold
             )
+            metrics['Window_Cluster_Bootstrap_FPR_95_Upper'] = metrics['Window_Match_Cluster_Bootstrap_FPR_95_Upper']
             metrics['Session_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
                 session_match_ids, s_y_true, s_y_pred, operating_threshold
             )
             
-            # 2. Design-Effect Adjustment (ICC rho_hat, Deff, N_eff)
-            w_rho, w_deff, w_neff, w_adj_upper = compute_design_effect(
+            # 2. Match Design-Effect Adjustment (ICC rho_hat, Deff, N_eff)
+            w_m_rho, w_m_deff, w_m_neff, w_m_adj_upper = compute_design_effect(
                 all_match_ids, y_true, y_pred, operating_threshold
             )
-            metrics['Window_ICC_Rho'] = w_rho
-            metrics['Window_Design_Effect'] = w_deff
-            metrics['Window_Effective_Sample_Size'] = w_neff
-            metrics['Window_Design_Effect_Adjusted_FPR_95_Upper'] = w_adj_upper
+            metrics['Window_Match_ICC_Rho'] = w_m_rho
+            metrics['Window_Match_Design_Effect'] = w_m_deff
+            metrics['Window_Match_Effective_Sample_Size'] = w_m_neff
+            metrics['Window_Match_Adjusted_FPR_95_Upper'] = w_m_adj_upper
+            metrics['Window_Design_Effect_Adjusted_FPR_95_Upper'] = w_m_adj_upper
             
             s_rho, s_deff, s_neff, s_adj_upper = compute_design_effect(
                 session_match_ids, s_y_true, s_y_pred, operating_threshold
@@ -405,11 +432,25 @@ def evaluate_model_on_loader(
             metrics['Session_Effective_Sample_Size'] = s_neff
             metrics['Session_Design_Effect_Adjusted_FPR_95_Upper'] = s_adj_upper
 
-        # 3. Player-Level Cluster Bootstrap (accounting for repeated player accounts across matches)
+        # 3. Player-Level Clustering (accounting for repeated player accounts across matches)
         if len(all_player_ids) > 0 and len(np.unique(all_player_ids)) > 1:
+            pid_list = [str(p) for p in all_player_ids]
             metrics['Window_Player_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
-                [str(p) for p in all_player_ids], y_true, y_pred, operating_threshold
+                pid_list, y_true, y_pred, operating_threshold
             )
+            w_p_rho, w_p_deff, w_p_neff, w_p_adj_upper = compute_design_effect(
+                pid_list, y_true, y_pred, operating_threshold
+            )
+            metrics['Window_Player_ICC_Rho'] = w_p_rho
+            metrics['Window_Player_Design_Effect'] = w_p_deff
+            metrics['Window_Player_Effective_Sample_Size'] = w_p_neff
+            metrics['Window_Player_Adjusted_FPR_95_Upper'] = w_p_adj_upper
+            
+            # Conservative combined effective sample size between match and player clustering axes
+            if any(m for m in all_match_ids):
+                cons_neff = min(w_m_neff, w_p_neff)
+                metrics['Window_Conservative_Effective_Sample_Size'] = cons_neff
+                metrics['Window_Conservative_Adjusted_FPR_95_Upper'] = max(w_m_adj_upper, w_p_adj_upper)
 
     # 4. Match-Level Evaluation (Match cluster unit — Rule of Three over independent clean matches)
     if any(m for m in all_match_ids):
