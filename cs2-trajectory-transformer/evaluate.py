@@ -450,12 +450,17 @@ def main():
         model, test_loader, device, operating_threshold=calibrated_tau
     )
 
-    print("\n" + "=" * 50)
-    print("      THESIS EVALUATION METRICS (TEST SET)      ")
-    print("=" * 50)
+    print("\n" + "=" * 65)
+    print("           THESIS EVALUATION METRICS (TEST SET)           ")
+    print("=" * 65)
     for k, v in metrics.items():
-        print(f"  > {k:<28}: {v:.4f}")
-    print("=" * 50)
+        if isinstance(v, (int, np.integer)) or ('_Count' in k and isinstance(v, (int, float)) and v == int(v)):
+            print(f"  > {k:<40}: {int(v)}")
+        elif 'FPR' in k:
+            print(f"  > {k:<40}: {v:.6f} ({v*100:.4f}%)")
+        else:
+            print(f"  > {k:<40}: {v:.4f}")
+    print("=" * 65)
 
 
     # Inference Latency Profiling

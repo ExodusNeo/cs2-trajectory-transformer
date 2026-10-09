@@ -64,7 +64,7 @@ def compute_tremor_band_power(
     signal_1d : np.ndarray
         1D time series (e.g. angular velocity or jerk).
     sampling_rate : float
-        Telemetry sampling rate (CS2 native sub-tick simulation is 64.0 Hz).
+        Telemetry sampling rate (CS2 native tick-sampled replay telemetry is 64.0 Hz).
     window_size : int
         Sliding window sample length (default 64 ticks = 1.0s at 64Hz, providing 1.0 Hz bin resolution).
     tremor_low : float
