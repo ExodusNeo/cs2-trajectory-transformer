@@ -280,15 +280,23 @@ def partition_dataset_files(
         clusters.append((c_matches, c_players))
         
     # Classify clusters by ground-truth match labels (clean vs cheater)
+    # A match is labeled as cheater if ANY of its extracted segments contain is_aimbot == 1.
     match_labels = {}
     for m, group in df_meta.groupby('match_id'):
-        sample_f = group['fpath'].iloc[0]
-        try:
-            import pyarrow.parquet as pq
-            tbl = pq.read_table(sample_f, columns=['is_aimbot'])
-            match_labels[m] = int(tbl['is_aimbot'][0].as_py())
-        except Exception:
-            match_labels[m] = 1 if ('cheater' in sample_f.lower() or 'cheat' in sample_f.lower()) else 0
+        has_cheater = 0
+        for sample_f in group['fpath']:
+            if 'cheater' in sample_f.lower() or 'cheat' in sample_f.lower() or 'match_x' in sample_f.lower():
+                has_cheater = 1
+                break
+            try:
+                import pyarrow.parquet as pq
+                tbl = pq.read_table(sample_f, columns=['is_aimbot'])
+                if int(tbl['is_aimbot'][0].as_py()) == 1:
+                    has_cheater = 1
+                    break
+            except Exception:
+                pass
+        match_labels[m] = has_cheater
 
     clean_clusters = [c for c in clusters if all(match_labels.get(m, 0) == 0 for m in c[0])]
     cheat_clusters = [c for c in clusters if any(match_labels.get(m, 0) == 1 for m in c[0])]
@@ -308,26 +316,53 @@ def partition_dataset_files(
                 n_va = 1
             return [group_list[i] for i in indices[:n_tr]], [group_list[i] for i in indices[n_tr:n_tr+n_va]], [group_list[i] for i in indices[n_tr+n_va:]]
         elif n == 2:
+            # Guarantee that both Train and Test receive 1 cluster when n == 2
             return [group_list[indices[0]]], [], [group_list[indices[1]]]
         else:
+            # n == 1: Under strict zero-leakage constraints, a single connected cluster cannot be split
             return [group_list[0]], [], []
 
     # Stratified cluster partitioning across classes
-    if len(clean_clusters) >= 3 and len(cheat_clusters) >= 3:
+    # Whenever both clean and cheater clusters exist, ALWAYS stratify each class independently
+    # to guarantee representation of both classes in train and held-out test partitions when >= 2 clusters exist.
+    if len(clean_clusters) > 0 and len(cheat_clusters) > 0:
         tr_clean, val_clean, test_clean = _split_cluster_group(clean_clusters, train_ratio, val_ratio, seed)
         tr_cheat, val_cheat, test_cheat = _split_cluster_group(cheat_clusters, train_ratio, val_ratio, seed + 1)
+        
+        if len(cheat_clusters) == 1:
+            logging.warning(
+                "Cheater class has only 1 connected cluster in dataset; under strict zero-leakage constraints, "
+                "this cluster is allocated to Train, leaving Test without cheater samples. "
+                "Held-out binary classification metrics (AUROC/AUPRC) require at least 2 cheater clusters."
+            )
+        if len(clean_clusters) == 1:
+            logging.warning(
+                "Clean class has only 1 connected cluster in dataset; under strict zero-leakage constraints, "
+                "this cluster is allocated to Train, leaving Test without clean samples."
+            )
+            
         train_clusters = tr_clean + tr_cheat
         val_clusters = val_clean + val_cheat
         test_clusters = test_clean + test_cheat
         
+        # If val is empty but we have surplus clean clusters in train, allocate one to val if possible
+        if len(val_clusters) == 0 and len(train_clusters) >= 3:
+            clean_in_train = [c for c in tr_clean]
+            if len(clean_in_train) >= 2:
+                moved = clean_in_train.pop()
+                tr_clean = clean_in_train
+                val_clusters = [moved]
+                train_clusters = tr_clean + tr_cheat
+
         train_matches = set().union(*[c[0] for c in train_clusters])
-        val_matches = set().union(*[c[0] for c in val_clusters])
+        val_matches = set().union(*[c[0] for c in val_clusters]) if val_clusters else set()
         test_matches = set().union(*[c[0] for c in test_clusters])
         
         train_files = df_meta[df_meta['match_id'].isin(train_matches)]['fpath'].tolist()
         val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
         test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
     elif len(clusters) >= 3:
+        # All clusters belong to a single class (pure clean or pure cheater)
         rng = np.random.default_rng(seed)
         cluster_indices = np.arange(len(clusters))
         rng.shuffle(cluster_indices)

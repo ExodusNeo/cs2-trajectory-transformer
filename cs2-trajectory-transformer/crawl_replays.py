@@ -223,14 +223,22 @@ def main():
         print(f"    Total Cheater ATWs:            {audit_res['overall_cheater_count']:,}")
         print(f"    Total Parquet Segments:        {audit_res['overall_total_count']:,}")
         print(f"  [Held-Out Test Partition (Nominal ~10% Split)]")
-        print(f"    Verified Clean Test ATWs:      {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
-        print(f"    Cheater Test ATWs:             {audit_res['test_cheater_count']:,}")
-        print(f"    Total Test Segments:           {audit_res['test_total_count']:,}")
+        if audit_res['is_test_split_audited']:
+            print(f"    Partition Status:              AUDITED (Strict Zero-Leakage Bipartite Split)")
+            print(f"    Verified Clean Test ATWs:      {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+            print(f"    Cheater Test ATWs:             {audit_res['test_cheater_count']:,}")
+            print(f"    Total Test Segments:           {audit_res['test_total_count']:,}")
+        else:
+            err_msg = audit_res.get('partition_error') or "Cannot partition into disjoint test split"
+            print(f"    Partition Status:              UNAVAILABLE ({err_msg}) [FAIL-CLOSED]")
+            print(f"    Verified Clean Test ATWs:      0 / {audit_res['target_clean']:,} (0.00%)")
         print("-" * 65)
         print(f"  Test Quota Satisfied:            {'YES [STOPPING CONDITION MET]' if audit_res['quota_met'] else 'NO [INGESTION REQUIRED]'}")
         if not audit_res['quota_met']:
             print(f"  Remaining Clean Gap (Test):      {audit_res['deficit']:,} clean ATWs")
         print("=" * 65)
+        if not audit_res['quota_met']:
+            sys.exit(1)
         return
 
     if args.process_only:
@@ -365,16 +373,23 @@ def main():
         print("=" * 65)
         
         cycle = 1
+        stopped_early_reason = None
         while True:
-            audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
-            print(f"\n[*] Iteration {cycle}: Test Split Clean = {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%) | Overall Clean = {audit_res['overall_clean_count']:,}")
-            if audit_res['quota_met']:
+            audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws, partition_test_split=True)
+            if audit_res['is_test_split_audited']:
+                print(f"\n[*] Iteration {cycle}: Test Split Clean = {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%) | Overall Clean = {audit_res['overall_clean_count']:,}")
+            else:
+                err_msg = audit_res.get('partition_error') or "Test partition not yet formed"
+                print(f"\n[*] Iteration {cycle}: Test Split UNAVAILABLE ({err_msg}) | Overall Clean = {audit_res['overall_clean_count']:,} (Quota unmet: fail-closed)")
+                
+            if audit_res['is_test_split_audited'] and audit_res['quota_met']:
                 print(f"[OK] Stopping condition satisfied! Held-out test clean count ({audit_res['test_clean_count']:,}) >= Target ({audit_res['target_clean']:,}).")
                 break
                 
             match_ids = crawler.crawl_tier_pool(tier=args.tier, target_count=args.count, matches_per_player=args.matches_per_player)
             if not match_ids:
-                print("[!] No additional matches discovered in tier pool. Stopping ingestion loop.")
+                stopped_early_reason = "No additional matches discovered in tier pool."
+                print(f"\n[!] {stopped_early_reason} Stopping ingestion loop.")
                 break
                 
             cycle_dems = []
@@ -386,7 +401,24 @@ def main():
                 batch_process_demos(clean_raw_path, clean_parquet_path, is_cheater_dataset=False, max_workers=args.workers)
                 
             cycle += 1
-        return
+            
+        # Strict Fail-Closed Verification of Stopping Condition
+        final_audit = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws, partition_test_split=True)
+        if not final_audit['is_test_split_audited']:
+            print(f"\n[ERROR] Ingestion loop terminated but held-out test split is unavailable: {final_audit.get('partition_error', 'Cannot partition')}")
+            if stopped_early_reason:
+                print(f"[ERROR] Reason: {stopped_early_reason}")
+            print("[ERROR] Stopping condition FAILED: Quota remains unmet (fail-closed invariant).")
+            sys.exit(1)
+        elif not final_audit['quota_met']:
+            print(f"\n[ERROR] Ingestion loop terminated before satisfying stopping condition: Clean Test ATWs ({final_audit['test_clean_count']:,}) < Target ({final_audit['target_clean']:,}).")
+            if stopped_early_reason:
+                print(f"[ERROR] Reason: {stopped_early_reason}")
+            print(f"[ERROR] Quota deficit: {final_audit['deficit']:,} clean test ATWs remaining.")
+            sys.exit(1)
+        else:
+            print(f"\n[SUCCESS] Stopping condition verified: {final_audit['test_clean_count']:,} clean ATWs in partitioned held-out test split.")
+            return
 
     # Mode D2: Specific players or Multi-Tier Auto Crawl (Clean)
     elif args.auto or args.players or crawler.api_key:
@@ -452,7 +484,11 @@ def main():
         print("EMPIRICAL STOPPING CONDITION AUDIT (TEST SPLIT)")
         print("=" * 65)
         print(f"  Overall Clean ATWs:              {audit_res['overall_clean_count']:,}")
-        print(f"  Held-Out Test Clean ATWs:        {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+        if audit_res['is_test_split_audited']:
+            print(f"  Held-Out Test Clean ATWs:        {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+        else:
+            err_msg = audit_res.get('partition_error') or "Cannot partition into disjoint test split"
+            print(f"  Held-Out Test Clean ATWs:        UNAVAILABLE ({err_msg}) [FAIL-CLOSED]")
         print(f"  Stopping Condition Met (Test):   {'YES [QUOTA SATISFIED]' if audit_res['quota_met'] else 'NO [INGESTION SHORTFALL]'}")
         if not audit_res['quota_met']:
             print(f"  Remaining Clean Gap (Test):      {audit_res['deficit']:,} ATWs")

@@ -64,17 +64,22 @@ def compute_metrics(
     f1 = f1_score(y_true, y_pred_bin, zero_division=0)
     
     # Calculate False Positive Rate at high sensitivity (95% TPR)
-    fpr, tpr, thresholds = roc_curve(y_true, y_pred_prob)
-    idx_95 = np.argmax(tpr >= 0.95) if (tpr >= 0.95).any() else -1
-    fpr_at_95_tpr = float(fpr[idx_95]) if idx_95 != -1 else 1.0
-    
-    # Calculate True Positive Rate at low False Positive Rate (FPR <= 0.001 / 0.1%)
-    idx_low_fpr = np.where(fpr <= 0.001)[0]
-    tpr_at_low_fpr = float(tpr[idx_low_fpr[-1]]) if len(idx_low_fpr) > 0 else 0.0
-    
-    # Calculate True Positive Rate at strict operational target (FPR <= 0.0001 / 0.01%)
-    idx_strict_fpr = np.where(fpr <= 0.0001)[0]
-    tpr_at_strict_fpr = float(tpr[idx_strict_fpr[-1]]) if len(idx_strict_fpr) > 0 else 0.0
+    if len(set(y_true)) > 1:
+        fpr, tpr, thresholds = roc_curve(y_true, y_pred_prob)
+        idx_95 = np.argmax(tpr >= 0.95) if (tpr >= 0.95).any() else -1
+        fpr_at_95_tpr = float(fpr[idx_95]) if idx_95 != -1 else 1.0
+        
+        # Calculate True Positive Rate at low False Positive Rate (FPR <= 0.001 / 0.1%)
+        idx_low_fpr = np.where(fpr <= 0.001)[0]
+        tpr_at_low_fpr = float(tpr[idx_low_fpr[-1]]) if len(idx_low_fpr) > 0 else 0.0
+        
+        # Calculate True Positive Rate at strict operational target (FPR <= 0.0001 / 0.01%)
+        idx_strict_fpr = np.where(fpr <= 0.0001)[0]
+        tpr_at_strict_fpr = float(tpr[idx_strict_fpr[-1]]) if len(idx_strict_fpr) > 0 else 0.0
+    else:
+        fpr_at_95_tpr = 1.0
+        tpr_at_low_fpr = 0.0
+        tpr_at_strict_fpr = 0.0
     
     # Statistical Confidence Bound on False Positive Rate at operating threshold
     n_neg = int(np.sum(y_true == 0))

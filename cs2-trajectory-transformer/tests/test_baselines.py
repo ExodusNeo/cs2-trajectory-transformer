@@ -6,6 +6,7 @@ import sys
 import os
 import torch
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -101,6 +102,40 @@ def test_audit_clean_atw_quota():
         res_30k = audit_clean_atw_quota(p_dir, target_clean=30000)
         assert res_30k['quota_met'] is False
         assert res_30k['deficit'] == 30000 - res_30k['test_clean_count']
+
+
+def test_audit_clean_atw_quota_fail_closed(tmp_path):
+    """Verify that audit_clean_atw_quota strictly fails closed when partitioning cannot be formed."""
+    from data.batch_processor import audit_clean_atw_quota
+    
+    # Create an unpartitionable dataset: only 1 match (1 cluster), but 100 clean trajectory segments
+    for seg in range(10):
+        df = pd.DataFrame({
+            'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
+            'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
+            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+            'match_id': "match_solo", 'steamid': 1001, 'segment_id': seg, 'is_aimbot': 0, 'player_elo': 1500.0
+        })
+        df.to_parquet(str(tmp_path / f"match_solo_p1001_seg{seg}.parquet"), index=False)
+        
+    # With target_clean=5: overall corpus has 10 clean ATWs, but test partition cannot be formed (< 3 matches)
+    res_partitioned = audit_clean_atw_quota(str(tmp_path), target_clean=5, partition_test_split=True)
+    assert res_partitioned['overall_clean_count'] == 10
+    assert res_partitioned['is_test_split_audited'] is False
+    assert res_partitioned['test_clean_count'] == 0
+    assert res_partitioned['clean_count'] == 0
+    # Must fail closed: quota_met MUST be False even though overall_clean >= target
+    assert res_partitioned['quota_met'] is False
+    assert res_partitioned['deficit'] == 5
+    assert res_partitioned['progress_pct'] == 0.0
+    assert res_partitioned['partition_error'] is not None
+
+    # When unpartitioned corpus audit is explicitly requested (partition_test_split=False):
+    res_overall = audit_clean_atw_quota(str(tmp_path), target_clean=5, partition_test_split=False)
+    assert res_overall['overall_clean_count'] == 10
+    assert res_overall['is_test_split_audited'] is False
+    assert res_overall['clean_count'] == 10
+    assert res_overall['quota_met'] is True
 
 
 def test_session_player_and_match_clustering():

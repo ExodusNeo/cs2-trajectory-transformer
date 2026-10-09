@@ -354,10 +354,11 @@ def audit_clean_atw_quota(
       - 'cheater_count': int, evaluated cheater count
       - 'total_count': int, evaluated total count
       - 'target_clean': int, target quota
-      - 'quota_met': bool, True if clean_count >= target_clean
+      - 'quota_met': bool, True if clean_count >= target_clean (strictly False if partition_test_split and test split unavailable)
       - 'progress_pct': float, clean_count / target_clean * 100.0
       - 'deficit': int, max(0, target_clean - clean_count)
       - 'is_test_split_audited': bool, True if quota is evaluated on held-out test partition
+      - 'partition_error': Optional[str], error message if test split partitioning failed
     """
     if not os.path.exists(processed_dir):
         return {
@@ -374,7 +375,8 @@ def audit_clean_atw_quota(
             'quota_met': False,
             'progress_pct': 0.0,
             'deficit': int(target_clean),
-            'is_test_split_audited': False
+            'is_test_split_audited': False,
+            'partition_error': f"Directory does not exist: {processed_dir}"
         }
         
     pattern = os.path.join(processed_dir, "**", "*.parquet")
@@ -389,35 +391,53 @@ def audit_clean_atw_quota(
     test_clean = 0
     test_cheater = 0
     is_test_audited = False
+    partition_error = None
     
-    if partition_test_split and len(files) > 0:
-        try:
+    if partition_test_split:
+        if len(files) == 0:
+            partition_error = "No parquet files found to partition."
+        else:
             try:
-                from .dataset import partition_dataset_files
-            except ImportError:
-                from data.dataset import partition_dataset_files
+                try:
+                    from .dataset import partition_dataset_files
+                except ImportError:
+                    from data.dataset import partition_dataset_files
+                    
+                _, _, test_files = partition_dataset_files(
+                    processed_dir,
+                    train_ratio=train_ratio,
+                    val_ratio=val_ratio,
+                    test_ratio=test_ratio,
+                    seed=seed
+                )
+                test_clean, test_cheater = _count_parquet_labels(test_files, check_columns=check_columns)
+                is_test_audited = True
+            except Exception as e:
+                partition_error = str(e)
+                logging.warning(
+                    f"Dataset cannot yet be partitioned into disjoint test split ({e}); "
+                    f"test split quota remains UNMET (failing closed)."
+                )
+                test_clean, test_cheater = 0, 0
+                is_test_audited = False
                 
-            _, _, test_files = partition_dataset_files(
-                processed_dir,
-                train_ratio=train_ratio,
-                val_ratio=val_ratio,
-                test_ratio=test_ratio,
-                seed=seed
-            )
-            test_clean, test_cheater = _count_parquet_labels(test_files, check_columns=check_columns)
-            is_test_audited = True
-        except Exception as e:
-            logging.info(f"Dataset cannot yet be partitioned into disjoint test split ({e}); falling back to overall corpus audit.")
-            test_clean, test_cheater = 0, 0
-            is_test_audited = False
-            
-    eval_clean = test_clean if is_test_audited else overall_clean
-    eval_cheater = test_cheater if is_test_audited else overall_cheater
-    eval_total = eval_clean + eval_cheater
-    
-    quota_met = (eval_clean >= target_clean)
-    progress_pct = float(eval_clean / max(1, target_clean) * 100.0)
-    deficit = int(max(0, target_clean - eval_clean))
+    if partition_test_split:
+        # Strictly enforce fail-closed evaluation: quota is evaluated on held-out test split.
+        # If test split is unavailable, clean_count is 0 and quota_met is strictly False.
+        eval_clean = test_clean if is_test_audited else 0
+        eval_cheater = test_cheater if is_test_audited else 0
+        eval_total = eval_clean + eval_cheater
+        quota_met = bool(is_test_audited and (eval_clean >= target_clean))
+        progress_pct = float(eval_clean / max(1, target_clean) * 100.0) if is_test_audited else 0.0
+        deficit = int(max(0, target_clean - eval_clean))
+    else:
+        # User explicitly requested unpartitioned corpus-wide audit
+        eval_clean = overall_clean
+        eval_cheater = overall_cheater
+        eval_total = overall_total
+        quota_met = bool(eval_clean >= target_clean)
+        progress_pct = float(eval_clean / max(1, target_clean) * 100.0)
+        deficit = int(max(0, target_clean - eval_clean))
     
     return {
         'test_clean_count': test_clean,
@@ -433,5 +453,6 @@ def audit_clean_atw_quota(
         'quota_met': quota_met,
         'progress_pct': progress_pct,
         'deficit': deficit,
-        'is_test_split_audited': is_test_audited
+        'is_test_split_audited': is_test_audited,
+        'partition_error': partition_error
     }

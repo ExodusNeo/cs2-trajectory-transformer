@@ -192,3 +192,68 @@ def test_scaler_save_and_load(tmp_path):
     np.testing.assert_allclose(l_mean, mean)
     np.testing.assert_allclose(l_std, std)
     assert l_cols == FEATURE_COLUMNS
+
+
+def test_stratified_cluster_partitioning_minority_cheaters(tmp_path):
+    """
+    Verify that partition_dataset_files stratifies clean and cheater clusters even when
+    the cheater minority class has fewer than 3 clusters (e.g. exactly 2 cheater clusters).
+    Guarantees that test_files contains both classes, preventing degenerate evaluation metrics.
+    """
+    from data.dataset import partition_dataset_files, CS2TrajectoryDataset
+    
+    # Create 10 independent clean matches (each 1 player)
+    for i in range(10):
+        m_id = f"match_c{i}"
+        p_id = 76561198000000100 + i
+        df = pd.DataFrame({
+            'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
+            'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
+            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+            'match_id': m_id, 'steamid': p_id, 'segment_id': 0, 'is_aimbot': 0, 'player_elo': 1500.0
+        })
+        df.to_parquet(str(tmp_path / f"{m_id}_p{p_id}_seg0.parquet"), index=False)
+        
+    # Create exactly 2 independent cheater matches (< 3 clusters)
+    for i in range(2):
+        m_id = f"match_x{i}"
+        p_id = 76561198000000900 + i
+        df = pd.DataFrame({
+            'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
+            'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
+            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+            'match_id': m_id, 'steamid': p_id, 'segment_id': 0, 'is_aimbot': 1, 'player_elo': 2400.0
+        })
+        df.to_parquet(str(tmp_path / f"{m_id}_p{p_id}_seg0.parquet"), index=False)
+        
+    train_files, val_files, test_files = partition_dataset_files(
+        str(tmp_path), train_ratio=0.80, val_ratio=0.10, test_ratio=0.10, seed=42
+    )
+    
+    # Train files must contain both classes
+    train_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in train_files]
+    assert 0 in train_labels, "Train split missing clean class!"
+    assert 1 in train_labels, "Train split missing cheater class!"
+    
+    # Test files MUST contain both classes (even though cheater class only had 2 clusters)
+    test_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in test_files]
+    assert 0 in test_labels, "Test split missing clean class!"
+    assert 1 in test_labels, "Test split missing cheater class! Unstratified split dropped minority class."
+    
+    # Check disjoint zero-leakage guarantee across matches and players
+    def extract_m_and_p(fpaths):
+        ms, ps = set(), set()
+        for f in fpaths:
+            df = pd.read_parquet(f)
+            ms.update(df['match_id'].unique())
+            ps.update(df['steamid'].unique())
+        return ms, ps
+        
+    tr_m, tr_p = extract_m_and_p(train_files)
+    va_m, va_p = extract_m_and_p(val_files)
+    te_m, te_p = extract_m_and_p(test_files)
+    
+    assert tr_m.isdisjoint(te_m), "Match leakage between train and test!"
+    assert tr_p.isdisjoint(te_p), "Player leakage between train and test!"
+    assert tr_m.isdisjoint(va_m), "Match leakage between train and val!"
+    assert va_m.isdisjoint(te_m), "Match leakage between val and test!"
