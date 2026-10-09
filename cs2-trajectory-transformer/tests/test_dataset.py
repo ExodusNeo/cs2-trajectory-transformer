@@ -378,8 +378,10 @@ def test_partition_dataset_files_two_clean_three_cheaters_succeeds(tmp_path):
     assert len(train_files) > 0 and len(val_files) > 0 and len(test_files) > 0
     train_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in train_files]
     test_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in test_files]
+    val_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in val_files]
     assert 0 in train_labels and 1 in train_labels
     assert 0 in test_labels and 1 in test_labels
+    assert 1 in val_labels and 0 not in val_labels, "When C=2, X=3, validation must contain cheater samples only"
 
 
 def test_partition_dataset_files_three_clean_three_cheaters_both_in_val(tmp_path):
@@ -432,4 +434,97 @@ def test_partition_dataset_files_one_clean_two_cheaters_raises_value_error(tmp_p
         
     assert "clean=1" in str(exc_info.value)
     assert "cheater=2" in str(exc_info.value)
+
+
+# ==============================================================================
+# Threshold Calibration Unit Tests (Clean-Only, Cheater-Only, Dual-Class, Empty)
+# ==============================================================================
+
+def test_calibrate_operating_threshold_clean_only_validation():
+    """
+    Verify threshold calibration on clean-only validation data (e.g. C>=3, X=2):
+    Calibrates to achieve zero false positives on clean samples, while explicitly
+    marking validation TPR as unmeasured.
+    """
+    from evaluate import calibrate_operating_threshold
+    
+    y_val = np.array([0] * 50)
+    # Predicted probabilities for clean duels: range [0.01, 0.42]
+    np.random.seed(42)
+    y_val_prob = np.random.uniform(0.01, 0.42, size=50)
+    
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.0001, return_info=True)
+    
+    assert info['is_calibrated'] is True
+    assert info['calibration_mode'] == 'clean_only_zero_fp'
+    assert info['clean_count'] == 50
+    assert info['cheater_count'] == 0
+    assert info['empirical_fpr'] == 0.0
+    assert info['empirical_tpr'] is None  # TPR cannot be evaluated without validation cheaters
+    assert tau >= float(np.max(y_val_prob))  # Threshold set to achieve 0 false alarms
+    assert info['nominal_fpr_95_upper'] == pytest.approx(3.0 / 50, rel=1e-3)
+
+
+def test_calibrate_operating_threshold_cheater_only_validation():
+    """
+    Verify threshold calibration on cheater-only validation data (e.g. C=2, X>=3):
+    Because 0 clean validation samples exist, FPR calibration is unavailable.
+    Must return default fallback threshold (0.5000) and explicitly set is_calibrated=False.
+    """
+    from evaluate import calibrate_operating_threshold
+    
+    y_val = np.array([1] * 20)
+    y_val_prob = np.random.uniform(0.60, 0.99, size=20)
+    
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.0001, return_info=True)
+    
+    assert info['is_calibrated'] is False
+    assert info['calibration_mode'] == 'unavailable'
+    assert info['clean_count'] == 0
+    assert info['cheater_count'] == 20
+    assert info['empirical_fpr'] is None
+    assert tau == 0.5  # Uncalibrated fallback
+    assert "0 clean samples" in info['status_message']
+
+
+def test_calibrate_operating_threshold_dual_class_validation():
+    """
+    Verify threshold calibration on dual-class validation data (e.g. C>=3, X>=3):
+    Calibrates via empirical ROC curve, achieving validation FPR <= target_fpr and
+    measuring validation TPR.
+    """
+    from evaluate import calibrate_operating_threshold
+    
+    # 100 clean samples (low scores) and 20 cheater samples (high scores)
+    np.random.seed(42)
+    y_clean = np.zeros(100, dtype=int)
+    y_clean_prob = np.random.uniform(0.01, 0.25, size=100)
+    
+    y_cheat = np.ones(20, dtype=int)
+    y_cheat_prob = np.random.uniform(0.70, 0.99, size=20)
+    
+    y_val = np.concatenate([y_clean, y_cheat])
+    y_val_prob = np.concatenate([y_clean_prob, y_cheat_prob])
+    
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.0001, return_info=True)
+    
+    assert info['is_calibrated'] is True
+    assert info['calibration_mode'] == 'dual_class_roc'
+    assert info['clean_count'] == 100
+    assert info['cheater_count'] == 20
+    assert info['empirical_fpr'] <= 0.0001
+    assert info['empirical_tpr'] is not None
+    assert info['empirical_tpr'] > 0.0  # High TPR achieved because classes are separable
+    assert 0.0 <= tau <= 1.0
+
+
+def test_calibrate_operating_threshold_empty_validation():
+    """Verify empty validation data returns is_calibrated=False and fallback 0.5000."""
+    from evaluate import calibrate_operating_threshold
+    
+    tau, info = calibrate_operating_threshold(np.array([]), np.array([]), return_info=True)
+    assert info['is_calibrated'] is False
+    assert tau == 0.5
+    assert info['calibration_mode'] == 'unavailable'
+
 

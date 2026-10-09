@@ -21,7 +21,8 @@ from sklearn.metrics import (
     accuracy_score,
     roc_curve
 )
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Union, Any
+import logging
 from scipy.stats import beta, spearmanr
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
@@ -33,20 +34,119 @@ from data.dataset import create_partitioned_dataloaders
 def calibrate_operating_threshold(
     y_val: np.ndarray, 
     y_val_prob: np.ndarray, 
-    target_fpr: float = 0.0001
-) -> float:
+    target_fpr: float = 0.0001,
+    return_info: bool = False
+) -> Union[float, Tuple[float, Dict[str, Any]]]:
     """
     Calibrates operational decision threshold tau* on the validation partition.
     Ensures empirical validation FPR <= target_fpr while maximizing sensitivity.
+
+    Data Requirements:
+    - Target FPR calibration strictly requires clean negative validation samples (y_val == 0).
+      If clean samples are absent (e.g. cheater-only validation), FPR calibration is unavailable,
+      and an uncalibrated default threshold (0.5000) is returned with is_calibrated=False.
+    - If clean samples are present but cheater samples are absent (clean-only validation),
+      tau* is calibrated to achieve zero false positives (empirical FPR = 0.0), but validation
+      TPR (sensitivity) cannot be evaluated due to the absence of cheater samples.
+    - If both classes are present, tau* is calibrated via empirical ROC curve to satisfy
+      FPR <= target_fpr while maximizing validation TPR.
+    - Finite sample size disclaimer: With N_clean < 1 / target_fpr (e.g. N_clean < 10,000 for
+      target_fpr=0.0001), zero false positives bounds empirical FPR by Rule of Three
+      at 3 / N_clean. Rigorous certification of the operational target (< 0.01%) requires the
+      full stopping condition (N_clean_test_ATW >= 30,000) on held-out evaluation.
     """
-    if len(set(y_val)) <= 1:
-        return 0.5
-    fpr, tpr, thresholds = roc_curve(y_val, y_val_prob)
+    y_val_arr = np.asarray(y_val)
+    y_prob_arr = np.asarray(y_val_prob)
+    
+    clean_mask = (y_val_arr == 0)
+    cheat_mask = (y_val_arr == 1)
+    n_clean = int(np.sum(clean_mask))
+    n_cheat = int(np.sum(cheat_mask))
+    
+    info: Dict[str, Any] = {
+        'is_calibrated': False,
+        'clean_count': n_clean,
+        'cheater_count': n_cheat,
+        'target_fpr': float(target_fpr),
+        'empirical_fpr': None,
+        'empirical_tpr': None,
+        'nominal_fpr_95_upper': None,
+        'calibration_mode': 'unavailable',
+        'status_message': ''
+    }
+
+    if len(y_val_arr) == 0:
+        info['status_message'] = "Validation split is empty; threshold uncalibrated."
+        logging.warning(f"[!] {info['status_message']} Falling back to default tau=0.5000.")
+        return (0.5, info) if return_info else 0.5
+
+    if n_clean == 0:
+        info['status_message'] = (
+            f"Validation split contains {n_cheat} cheater samples but 0 clean samples; "
+            f"FPR calibration requires negative clean samples. Threshold uncalibrated."
+        )
+        logging.warning(f"[!] {info['status_message']} Falling back to default tau=0.5000.")
+        return (0.5, info) if return_info else 0.5
+
+    clean_probs = y_prob_arr[clean_mask]
+    
+    if n_cheat == 0:
+        # Clean-only validation: Calibrate threshold to achieve zero false positives (FPR <= target_fpr)
+        # Any single FP on N_clean < 10,000 would produce FPR >= 1/N_clean > target_fpr.
+        if n_clean >= int(np.ceil(1.0 / target_fpr)):
+            tau = float(np.quantile(clean_probs, 1.0 - target_fpr))
+        else:
+            max_p = float(np.max(clean_probs)) if len(clean_probs) > 0 else 0.5
+            tau = min(1.0, max_p + 1e-4) if max_p < 1.0 else 1.0
+            
+        emp_fp = int(np.sum(clean_probs >= tau))
+        emp_fpr = float(emp_fp / n_clean)
+        rot_upper = float(3.0 / n_clean) if emp_fp == 0 else float(min(1.0, (emp_fp + 3.0) / n_clean))
+        
+        info['is_calibrated'] = True
+        info['calibration_mode'] = 'clean_only_zero_fp'
+        info['empirical_fpr'] = emp_fpr
+        info['empirical_tpr'] = None
+        info['nominal_fpr_95_upper'] = rot_upper
+        info['status_message'] = (
+            f"Calibrated on clean-only validation ({n_clean} clean samples, 0 cheater samples): "
+            f"tau*={tau:.4f} achieves empirical validation FPR={emp_fpr:.6f} (Rule of Three 95% bound <= {rot_upper*100:.3f}%). "
+            f"Note: Validation TPR unmeasured due to absence of validation cheater duels."
+        )
+        logging.info(f"[*] {info['status_message']}")
+        return (tau, info) if return_info else tau
+
+    # Dual-class validation: Clean and Cheater samples both present
+    cheat_probs = y_prob_arr[cheat_mask]
+    fpr, tpr, thresholds = roc_curve(y_val_arr, y_prob_arr)
     valid_indices = np.where(fpr <= target_fpr)[0]
+    
     if len(valid_indices) > 0:
         best_idx = valid_indices[-1]
-        return float(thresholds[best_idx])
-    return 0.95
+        tau = float(thresholds[best_idx])
+    else:
+        # If no threshold in roc_curve satisfies fpr <= target_fpr, enforce zero FP threshold
+        max_p = float(np.max(clean_probs)) if len(clean_probs) > 0 else 0.5
+        tau = min(1.0, max_p + 1e-4) if max_p < 1.0 else 1.0
+
+    tau = float(np.clip(tau, 0.0, 1.0))
+    emp_fp = int(np.sum(clean_probs >= tau))
+    emp_tp = int(np.sum(cheat_probs >= tau))
+    emp_fpr = float(emp_fp / n_clean)
+    emp_tpr = float(emp_tp / n_cheat)
+    rot_upper = float(3.0 / n_clean) if emp_fp == 0 else float(min(1.0, (emp_fp + 3.0) / n_clean))
+
+    info['is_calibrated'] = True
+    info['calibration_mode'] = 'dual_class_roc'
+    info['empirical_fpr'] = emp_fpr
+    info['empirical_tpr'] = emp_tpr
+    info['nominal_fpr_95_upper'] = rot_upper
+    info['status_message'] = (
+        f"Calibrated on dual-class validation ({n_clean} clean, {n_cheat} cheaters): "
+        f"tau*={tau:.4f} achieves validation FPR={emp_fpr:.6f} and validation TPR={emp_tpr:.4f}."
+    )
+    logging.info(f"[*] {info['status_message']}")
+    return (tau, info) if return_info else tau
 
 
 def compute_metrics(
@@ -660,14 +760,25 @@ def main():
     # 1. Calibrate operational decision threshold tau* on validation partition
     print(f"[*] Calibrating operational decision threshold on validation set (target FPR <= {args.target_fpr*100:.3f}%)...")
     val_metrics, val_true, val_pred, _, _ = evaluate_model_on_loader(model, val_loader, device)
-    calibrated_tau = calibrate_operating_threshold(val_true, val_pred, target_fpr=args.target_fpr)
-    print(f"[*] Calibrated operating threshold tau*: {calibrated_tau:.4f}")
+    calibrated_tau, calib_info = calibrate_operating_threshold(val_true, val_pred, target_fpr=args.target_fpr, return_info=True)
+    if calib_info['is_calibrated']:
+        print(f"[*] Calibrated operating threshold tau*: {calibrated_tau:.4f} ({calib_info['status_message']})")
+    else:
+        print(f"[!] Warning: Threshold uncalibrated ({calib_info['status_message']}). Using default fallback tau*={calibrated_tau:.4f}.")
 
     # 2. Evaluate on held-out test partition using calibrated threshold
     print(f"[*] Evaluating on held-out test dataset with tau*={calibrated_tau:.4f}...")
     metrics, y_true, y_pred, embeddings, player_ids = evaluate_model_on_loader(
         model, test_loader, device, operating_threshold=calibrated_tau
     )
+    metrics['Operating_Threshold'] = float(calibrated_tau)
+    metrics['Threshold_Is_Calibrated'] = 1 if calib_info['is_calibrated'] else 0
+    metrics['Validation_Clean_Samples'] = calib_info['clean_count']
+    metrics['Validation_Cheater_Samples'] = calib_info['cheater_count']
+    if calib_info['empirical_fpr'] is not None:
+        metrics['Validation_Empirical_FPR'] = float(calib_info['empirical_fpr'])
+    if calib_info['empirical_tpr'] is not None:
+        metrics['Validation_Empirical_TPR'] = float(calib_info['empirical_tpr'])
 
     print("\n" + "=" * 65)
     print("           THESIS EVALUATION METRICS (TEST SET)           ")

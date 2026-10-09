@@ -231,9 +231,24 @@ def partition_dataset_files(
 
     Connected components are preserved intact as atomic units.
     Never silently returns an empty train, validation, or test partition.
-    When available components permit (clean >= 2, cheater >= 2, total >= 5),
-    Train and held-out Test are guaranteed to contain both classes.
-    If component counts make valid partitioning impossible, raises descriptive ValueError.
+
+    Class Representation Guarantees by Component Counts (clean=C, cheater=X):
+    - C >= 3 and X >= 3:
+      Train, Validation, and Test all contain BOTH clean and cheater components.
+      Enables complete dual-class ROC-based operational threshold calibration.
+    - C >= 3 and X == 2:
+      Train and Test contain BOTH classes (1 cheater component each).
+      Validation contains CLEAN components ONLY (permits zero-false-alarm threshold
+      calibration, while validation TPR is unmeasured until held-out test evaluation).
+    - C == 2 and X >= 3:
+      Train and Test contain BOTH classes (1 clean component each).
+      Validation contains CHEATER components ONLY (zero clean validation samples;
+      FPR-based threshold calibration is unavailable on validation).
+    - C == 2 and X == 2:
+      Infeasible (4 components consumed by Train and Test, leaving Validation empty).
+      Raises descriptive ValueError.
+    - Single-class datasets (C == 0 or X == 0):
+      Requires total components >= 3 to populate non-empty Train, Val, and Test.
 
     Returns:
     --------
@@ -396,14 +411,14 @@ def partition_dataset_files(
             tr_cheat, val_cheat, test_cheat = _split_clusters_two_way(cheat_clusters, seed + 1)
             logging.info(
                 "Cheater class has exactly 2 connected components: allocated 1 to Train and 1 to Test. "
-                "Validation split populated with clean samples for FPR threshold calibration."
+                "Validation split contains clean samples only (FPR calibration available; validation TPR unmeasured until test evaluation)."
             )
         elif C == 2 and X >= 3:
             tr_clean, val_clean, test_clean = _split_clusters_two_way(clean_clusters, seed)
             tr_cheat, val_cheat, test_cheat = _split_clusters_three_way(cheat_clusters, train_ratio, val_ratio, seed + 1)
             logging.info(
                 "Clean class has exactly 2 connected components: allocated 1 to Train and 1 to Test. "
-                "Validation split populated with cheater samples."
+                "Validation split contains cheater samples only (0 clean samples; FPR threshold calibration unavailable on validation)."
             )
         elif C >= 3 and X == 1:
             tr_clean, val_clean, test_clean = _split_clusters_three_way(clean_clusters, train_ratio, val_ratio, seed)
