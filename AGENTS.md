@@ -135,6 +135,7 @@ All code contributions MUST adhere strictly to the following standards:
    - Exact physical units of inputs and outputs (e.g., `rad/s`, `rad/s^2`, `degrees`, `normalized [0.0, 1.0]`).
    - Tensor shapes for multidimensional inputs (e.g., `[batch_size, seq_len, 8]`).
 3. **Windows Multiprocessing Safety:** Any script invoking `multiprocessing` or `concurrent.futures.ProcessPoolExecutor` MUST be protected by `if __name__ == "__main__":` to prevent recursive process spawning on Windows.
+4. **In-Place File Updates (Zero Backup Copies):** Never generate `.bak`, `.backup`, or duplicate copy files on the host system or desktop. Directly update canonical target files in-place and rely on Git version control.
 
 ---
 
@@ -212,3 +213,4 @@ When starting work in a new conversation:
 2. **Preserve Documentation Integrity:** Whenever modifying or adding any code, update `THESIS_TRACKER.md` immediately. Never leave code undocumented.
 3. **Verify Before and After:** Run `pytest tests/` before making changes to confirm baseline functionality, and run `pytest tests/` after changes to ensure zero regressions.
 4. **Adhere to Mathematical Notation:** Use the symbols and equations defined in Chapter 3 ($\omega_t, \alpha_t, j_t, \kappa_t, S_c, \text{TBP}, \mathcal{L}_{\text{total}}$).
+5. **Zero Backup Copies Policy:** Never create `.bak`, `.backup`, or duplicate copy files of the manuscript or codebase files. Directly update the active canonical file in-place and rely on Git version control.
