@@ -41,19 +41,30 @@ def calibrate_operating_threshold(
     Calibrates operational decision threshold tau* on the validation partition.
     Ensures empirical validation FPR <= target_fpr while maximizing sensitivity.
 
-    Data Requirements:
+    Comparison Rule:
+    - Classification decision uses: y_pred_bin = (y_prob >= tau).
+    - Threshold selection strictly evaluates false positives under this rule to account
+      for tied scores and threshold boundary behavior.
+
+    Data Requirements & Calibration Modes:
     - Target FPR calibration strictly requires clean negative validation samples (y_val == 0).
       If clean samples are absent (e.g. cheater-only validation), FPR calibration is unavailable,
       and an uncalibrated default threshold (0.5000) is returned with is_calibrated=False.
     - If clean samples are present but cheater samples are absent (clean-only validation),
-      tau* is calibrated to achieve zero false positives (empirical FPR = 0.0), but validation
-      TPR (sensitivity) cannot be evaluated due to the absence of cheater samples.
-    - If both classes are present, tau* is calibrated via empirical ROC curve to satisfy
-      FPR <= target_fpr while maximizing validation TPR.
-    - Finite sample size disclaimer: With N_clean < 1 / target_fpr (e.g. N_clean < 10,000 for
-      target_fpr=0.0001), zero false positives bounds empirical FPR by Rule of Three
-      at 3 / N_clean. Rigorous certification of the operational target (< 0.01%) requires the
-      full stopping condition (N_clean_test_ATW >= 30,000) on held-out evaluation.
+      tau* is calibrated to achieve empirical FPR <= target_fpr on clean samples. Validation
+      TPR (sensitivity) is kept strictly marked unavailable (None) due to absence of cheaters.
+    - If both classes are present, tau* is calibrated to satisfy empirical FPR <= target_fpr
+      while maximizing empirical validation TPR.
+    - If no valid threshold in [0.0, 1.0] satisfies empirical FPR <= target_fpr (e.g. clean
+      scores at 1.0 or ties exceeding allowed false alarms), calibration is marked unmet
+      (is_calibrated=False, calibration_mode='unmet'), and default fallback 0.5000 is returned.
+
+    Empirical Calibration vs Statistical Evidence:
+    - Meeting the target FPR on a finite validation sample does NOT certify the population FPR.
+      For instance, observing 0 FPs in N=600 validation duels yields a Rule-of-Three one-sided
+      95% upper bound of ~3/600 = 0.50%, not 0.01%.
+    - The returned info dictionary explicitly reports observed false-positive count, clean sample
+      count, empirical FPR, and the one-sided 95% confidence bound (Rule of Three or Clopper-Pearson).
     """
     y_val_arr = np.asarray(y_val)
     y_prob_arr = np.asarray(y_val_prob)
@@ -68,10 +79,13 @@ def calibrate_operating_threshold(
         'clean_count': n_clean,
         'cheater_count': n_cheat,
         'target_fpr': float(target_fpr),
+        'observed_fp_count': None,
+        'clean_sample_count': n_clean,
         'empirical_fpr': None,
         'empirical_tpr': None,
         'nominal_fpr_95_upper': None,
         'calibration_mode': 'unavailable',
+        'statistical_evidence': '',
         'status_message': ''
     }
 
@@ -89,64 +103,160 @@ def calibrate_operating_threshold(
         return (0.5, info) if return_info else 0.5
 
     clean_probs = y_prob_arr[clean_mask]
-    
+    max_allowed_fp = int(np.floor(n_clean * target_fpr))
+
+    def _calc_conf_bound(fp_cnt: int, total_clean: int) -> float:
+        if fp_cnt == 0:
+            return float(3.0 / total_clean)
+        return float(beta.ppf(0.95, fp_cnt + 1, total_clean - fp_cnt))
+
     if n_cheat == 0:
-        # Clean-only validation: Calibrate threshold to achieve zero false positives (FPR <= target_fpr)
-        # Any single FP on N_clean < 10,000 would produce FPR >= 1/N_clean > target_fpr.
-        if n_clean >= int(np.ceil(1.0 / target_fpr)):
-            tau = float(np.quantile(clean_probs, 1.0 - target_fpr))
-        else:
-            max_p = float(np.max(clean_probs)) if len(clean_probs) > 0 else 0.5
-            tau = min(1.0, max_p + 1e-4) if max_p < 1.0 else 1.0
-            
-        emp_fp = int(np.sum(clean_probs >= tau))
+        # Clean-only validation: Calibrate threshold to achieve FPR <= target_fpr on clean samples.
+        # Evaluation uses score >= tau. Test unique scores in ascending order to find the minimal valid threshold.
+        clean_sorted = np.sort(np.unique(clean_probs))
+        u_max_clean = float(clean_sorted[-1])
+        selected_tau: Optional[float] = None
+
+        for u in clean_sorted:
+            fp_cnt = int(np.sum(clean_probs >= u))
+            if fp_cnt <= max_allowed_fp:
+                selected_tau = float(u)
+                break
+
+        if selected_tau is None:
+            # All unique observed clean scores have fp_cnt > max_allowed_fp.
+            # To achieve fewer false positives, tau must be strictly greater than u_max_clean.
+            if u_max_clean < 1.0:
+                selected_tau = float(min(1.0, u_max_clean + 1e-4))
+            else:
+                # u_max_clean == 1.0 and samples at 1.0 exceed max_allowed_fp.
+                # Since tau cannot exceed 1.0, no valid threshold in [0, 1] can satisfy target FPR.
+                selected_tau = 1.0
+
+        # Calculate actual validation FPR under the decision rule
+        emp_fp = int(np.sum(clean_probs >= selected_tau))
         emp_fpr = float(emp_fp / n_clean)
-        rot_upper = float(3.0 / n_clean) if emp_fp == 0 else float(min(1.0, (emp_fp + 3.0) / n_clean))
-        
-        info['is_calibrated'] = True
-        info['calibration_mode'] = 'clean_only_zero_fp'
+        conf_upper = _calc_conf_bound(emp_fp, n_clean)
+
+        info['observed_fp_count'] = emp_fp
+        info['clean_sample_count'] = n_clean
         info['empirical_fpr'] = emp_fpr
-        info['empirical_tpr'] = None
-        info['nominal_fpr_95_upper'] = rot_upper
-        info['status_message'] = (
-            f"Calibrated on clean-only validation ({n_clean} clean samples, 0 cheater samples): "
-            f"tau*={tau:.4f} achieves empirical validation FPR={emp_fpr:.6f} (Rule of Three 95% bound <= {rot_upper*100:.3f}%). "
-            f"Note: Validation TPR unmeasured due to absence of validation cheater duels."
-        )
-        logging.info(f"[*] {info['status_message']}")
-        return (tau, info) if return_info else tau
+        info['empirical_tpr'] = None  # Kept strictly unavailable/unmeasured
+        info['nominal_fpr_95_upper'] = conf_upper
+
+        if emp_fpr <= target_fpr:
+            info['is_calibrated'] = True
+            info['calibration_mode'] = 'clean_only_zero_fp' if emp_fp == 0 else 'clean_only'
+            info['statistical_evidence'] = (
+                f"Empirical validation calibration achieved {emp_fp} false positive(s) out of {n_clean} clean samples "
+                f"(empirical validation FPR = {emp_fpr:.6f} <= target {target_fpr:.6f}). "
+                f"Statistical caveat: Meeting the target FPR on a finite validation sample (N={n_clean}) does NOT certify "
+                f"the population FPR; it establishes only that the sample error rate satisfies the criterion. "
+                f"The one-sided 95% upper confidence bound on the error rate is <= {conf_upper*100:.3f}% "
+                f"({emp_fp} FP, N={n_clean}). Certification of the population target (FPR <= 0.01%) requires the full stopping "
+                f"condition (N_clean_test_ATW >= 30,000) with zero observed false positives on held-out evaluation."
+            )
+            info['status_message'] = (
+                f"Calibrated on clean-only validation ({n_clean} clean samples, 0 cheater samples): "
+                f"tau*={selected_tau:.4f} achieves empirical validation FPR={emp_fpr:.6f} "
+                f"({emp_fp}/{n_clean} FP, 95% bound <= {conf_upper*100:.3f}%). "
+                f"Validation TPR is unavailable/unmeasured due to absence of cheater samples."
+            )
+            logging.info(f"[*] {info['status_message']}")
+            return (selected_tau, info) if return_info else selected_tau
+        else:
+            info['is_calibrated'] = False
+            info['calibration_mode'] = 'unmet'
+            info['status_message'] = (
+                f"Empirical validation FPR target ({target_fpr:.6f}) could not be met by any valid threshold. "
+                f"Minimum achievable validation FPR is {emp_fpr:.6f} ({emp_fp}/{n_clean} false positives). "
+                f"Calibration unmet; falling back to default tau=0.5000."
+            )
+            info['statistical_evidence'] = (
+                f"Target FPR {target_fpr:.6f} unmet on finite validation sample (N={n_clean}). "
+                f"Observed false positives at tau=1.0: {emp_fp}/{n_clean} (FPR={emp_fpr:.6f}, 95% bound <= {conf_upper*100:.3f}%)."
+            )
+            logging.warning(f"[!] {info['status_message']}")
+            return (0.5, info) if return_info else 0.5
 
     # Dual-class validation: Clean and Cheater samples both present
     cheat_probs = y_prob_arr[cheat_mask]
-    fpr, tpr, thresholds = roc_curve(y_val_arr, y_prob_arr)
-    valid_indices = np.where(fpr <= target_fpr)[0]
     
-    if len(valid_indices) > 0:
-        best_idx = valid_indices[-1]
-        tau = float(thresholds[best_idx])
+    # Candidate thresholds: all unique scores present in y_val_prob, plus u_max_clean + 1e-4 if < 1.0, and 1.0
+    unique_scores = np.unique(y_prob_arr)
+    candidates = list(unique_scores)
+    u_max_clean = float(np.max(clean_probs))
+    if u_max_clean < 1.0:
+        candidates.append(float(min(1.0, u_max_clean + 1e-4)))
+    if 1.0 not in candidates:
+        candidates.append(1.0)
+    candidates = sorted(list(set(candidates)))
+
+    valid_candidates = []
+    for cand_tau in candidates:
+        fp_cnt = int(np.sum(clean_probs >= cand_tau))
+        fpr_val = float(fp_cnt / n_clean)
+        if fpr_val <= target_fpr:
+            tp_cnt = int(np.sum(cheat_probs >= cand_tau))
+            tpr_val = float(tp_cnt / n_cheat)
+            # Preference order:
+            # 1. Maximize TPR (tpr_val)
+            # 2. Minimize FPR (-fpr_val)
+            # 3. Maximize threshold (cand_tau) to provide higher safety margin away from clean scores
+            valid_candidates.append((tpr_val, -fpr_val, cand_tau, fp_cnt, tp_cnt, fpr_val))
+
+    if valid_candidates:
+        valid_candidates.sort(reverse=True)
+        best_tpr, best_neg_fpr, selected_tau, emp_fp, emp_tp, emp_fpr = valid_candidates[0]
+        emp_tpr = float(emp_tp / n_cheat)
+        conf_upper = _calc_conf_bound(emp_fp, n_clean)
+
+        info['is_calibrated'] = True
+        info['calibration_mode'] = 'dual_class_roc'
+        info['observed_fp_count'] = emp_fp
+        info['clean_sample_count'] = n_clean
+        info['empirical_fpr'] = emp_fpr
+        info['empirical_tpr'] = emp_tpr
+        info['nominal_fpr_95_upper'] = conf_upper
+        info['statistical_evidence'] = (
+            f"Empirical validation calibration achieved {emp_fp} false positive(s) out of {n_clean} clean samples "
+            f"(validation FPR={emp_fpr:.6f} <= target {target_fpr:.6f}) and validation TPR={emp_tpr:.4f}. "
+            f"Meeting target FPR on a finite validation sample (N={n_clean}) does NOT certify population FPR; "
+            f"the one-sided 95% confidence bound is <= {conf_upper*100:.3f}% ({emp_fp} FP, N={n_clean}). "
+            f"Certification of population FPR <= 0.01% requires N_clean_test_ATW >= 30,000 with zero observed "
+            f"false positives on held-out evaluation."
+        )
+        info['status_message'] = (
+            f"Calibrated on dual-class validation ({n_clean} clean, {n_cheat} cheaters): "
+            f"tau*={selected_tau:.4f} achieves validation FPR={emp_fpr:.6f} ({emp_fp}/{n_clean} FP, "
+            f"95% bound <= {conf_upper*100:.3f}%) and validation TPR={emp_tpr:.4f}."
+        )
+        logging.info(f"[*] {info['status_message']}")
+        return (selected_tau, info) if return_info else selected_tau
     else:
-        # If no threshold in roc_curve satisfies fpr <= target_fpr, enforce zero FP threshold
-        max_p = float(np.max(clean_probs)) if len(clean_probs) > 0 else 0.5
-        tau = min(1.0, max_p + 1e-4) if max_p < 1.0 else 1.0
+        # No threshold in [0.0, 1.0] could achieve FPR <= target_fpr
+        emp_fp = int(np.sum(clean_probs >= 1.0))
+        emp_fpr = float(emp_fp / n_clean)
+        conf_upper = _calc_conf_bound(emp_fp, n_clean)
 
-    tau = float(np.clip(tau, 0.0, 1.0))
-    emp_fp = int(np.sum(clean_probs >= tau))
-    emp_tp = int(np.sum(cheat_probs >= tau))
-    emp_fpr = float(emp_fp / n_clean)
-    emp_tpr = float(emp_tp / n_cheat)
-    rot_upper = float(3.0 / n_clean) if emp_fp == 0 else float(min(1.0, (emp_fp + 3.0) / n_clean))
-
-    info['is_calibrated'] = True
-    info['calibration_mode'] = 'dual_class_roc'
-    info['empirical_fpr'] = emp_fpr
-    info['empirical_tpr'] = emp_tpr
-    info['nominal_fpr_95_upper'] = rot_upper
-    info['status_message'] = (
-        f"Calibrated on dual-class validation ({n_clean} clean, {n_cheat} cheaters): "
-        f"tau*={tau:.4f} achieves validation FPR={emp_fpr:.6f} and validation TPR={emp_tpr:.4f}."
-    )
-    logging.info(f"[*] {info['status_message']}")
-    return (tau, info) if return_info else tau
+        info['is_calibrated'] = False
+        info['calibration_mode'] = 'unmet'
+        info['observed_fp_count'] = emp_fp
+        info['clean_sample_count'] = n_clean
+        info['empirical_fpr'] = emp_fpr
+        info['empirical_tpr'] = None
+        info['nominal_fpr_95_upper'] = conf_upper
+        info['status_message'] = (
+            f"Empirical validation FPR target ({target_fpr:.6f}) could not be met by any valid threshold. "
+            f"Minimum achievable validation FPR is {emp_fpr:.6f} ({emp_fp}/{n_clean} false positives). "
+            f"Calibration unmet; falling back to default tau=0.5000."
+        )
+        info['statistical_evidence'] = (
+            f"Target FPR {target_fpr:.6f} unmet on finite validation sample (N={n_clean}). "
+            f"Observed false positives at tau=1.0: {emp_fp}/{n_clean} (FPR={emp_fpr:.6f}, 95% bound <= {conf_upper*100:.3f}%)."
+        )
+        logging.warning(f"[!] {info['status_message']}")
+        return (0.5, info) if return_info else 0.5
 
 
 def compute_metrics(
@@ -779,6 +889,10 @@ def main():
         metrics['Validation_Empirical_FPR'] = float(calib_info['empirical_fpr'])
     if calib_info['empirical_tpr'] is not None:
         metrics['Validation_Empirical_TPR'] = float(calib_info['empirical_tpr'])
+    if calib_info['observed_fp_count'] is not None:
+        metrics['Validation_Observed_FP_Count'] = int(calib_info['observed_fp_count'])
+    if calib_info['nominal_fpr_95_upper'] is not None:
+        metrics['Validation_FPR_95_Upper'] = float(calib_info['nominal_fpr_95_upper'])
 
     print("\n" + "=" * 65)
     print("           THESIS EVALUATION METRICS (TEST SET)           ")

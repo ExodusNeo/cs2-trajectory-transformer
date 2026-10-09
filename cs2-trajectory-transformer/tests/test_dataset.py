@@ -528,3 +528,108 @@ def test_calibrate_operating_threshold_empty_validation():
     assert info['calibration_mode'] == 'unavailable'
 
 
+def test_calibrate_operating_threshold_tied_scores():
+    """
+    Verify threshold calibration with tied clean scores:
+    When 10 samples are tied at 0.80 and allowed FP = 5 (target_fpr=0.05, N=100),
+    setting tau=0.80 yields 10 false positives (FPR=0.10 > 0.05) due to score >= tau.
+    The tie-aware calibrator must reject 0.80 and select a threshold strictly greater
+    than 0.80, guaranteeing empirical validation FPR <= target_fpr.
+    """
+    from evaluate import calibrate_operating_threshold
+
+    y_val = np.array([0] * 100)
+    # 90 samples at 0.10, 10 samples tied at 0.80
+    y_val_prob = np.array([0.10] * 90 + [0.80] * 10)
+
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.05, return_info=True)
+
+    assert info['is_calibrated'] is True
+    assert info['clean_sample_count'] == 100
+    assert info['observed_fp_count'] <= 5  # Must not exceed allowed 5 false positives
+    assert info['empirical_fpr'] <= 0.05
+    assert info['empirical_tpr'] is None  # TPR unavailable on clean-only split
+    assert tau > 0.80  # Must reject 0.80 because of ties
+    assert info['observed_fp_count'] == 0
+    assert info['nominal_fpr_95_upper'] == pytest.approx(3.0 / 100, rel=1e-3)
+    assert "does NOT certify" in info['statistical_evidence']
+
+
+def test_calibrate_operating_threshold_equal_to_max_score():
+    """
+    Verify threshold calibration when threshold equals the maximum score:
+    When 3 samples are tied at 0.80 and allowed FP = 5 (target_fpr=0.05, N=100),
+    setting tau=0.80 yields 3 false positives (FPR=0.03 <= 0.05).
+    The minimal valid threshold selected is exactly equal to max(clean_probs).
+    """
+    from evaluate import calibrate_operating_threshold
+
+    y_val = np.array([0] * 100)
+    # 97 samples at 0.10, 3 samples at 0.80 (maximum score)
+    y_val_prob = np.array([0.10] * 97 + [0.80] * 3)
+
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.05, return_info=True)
+
+    assert info['is_calibrated'] is True
+    assert tau == pytest.approx(0.80)
+    assert tau == float(np.max(y_val_prob))
+    assert info['observed_fp_count'] == 3
+    assert info['clean_sample_count'] == 100
+    assert info['empirical_fpr'] == pytest.approx(0.03)
+    assert info['empirical_tpr'] is None
+    assert info['nominal_fpr_95_upper'] is not None
+    assert info['nominal_fpr_95_upper'] > 0.03
+    assert "does NOT certify" in info['statistical_evidence']
+
+
+def test_calibrate_operating_threshold_scores_at_one():
+    """
+    Verify threshold calibration when clean scores are at 1.0:
+    When clean samples have scores at 1.0, any valid threshold tau in [0.0, 1.0]
+    classifies them as positive (score >= tau is true).
+    If the count of 1.0 scores exceeds allowed false positives, calibration
+    must be marked unmet (is_calibrated=False, calibration_mode='unmet')
+    and return fallback 0.5000.
+    """
+    from evaluate import calibrate_operating_threshold
+
+    y_val = np.array([0] * 50)
+    y_val_prob = np.array([1.0] * 50)
+
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.0001, return_info=True)
+
+    assert info['is_calibrated'] is False
+    assert info['calibration_mode'] == 'unmet'
+    assert tau == 0.5  # Uncalibrated fallback
+    assert info['observed_fp_count'] == 50
+    assert info['clean_sample_count'] == 50
+    assert info['empirical_fpr'] == 1.0
+    assert info['empirical_tpr'] is None
+    assert "could not be met" in info['status_message']
+
+
+def test_calibrate_operating_threshold_target_cannot_be_met():
+    """
+    Verify threshold calibration when empirical target cannot be met:
+    Target allows at most 1 false positive (N=100, target_fpr=0.01), but
+    5 clean samples have score 1.0. Minimum achievable FPR is 0.05 > 0.01.
+    Must mark calibration unmet and return fallback 0.5000.
+    """
+    from evaluate import calibrate_operating_threshold
+
+    y_val = np.array([0] * 100)
+    # 95 samples at 0.10, 5 samples at 1.0
+    y_val_prob = np.array([0.10] * 95 + [1.0] * 5)
+
+    tau, info = calibrate_operating_threshold(y_val, y_val_prob, target_fpr=0.01, return_info=True)
+
+    assert info['is_calibrated'] is False
+    assert info['calibration_mode'] == 'unmet'
+    assert tau == 0.5
+    assert info['observed_fp_count'] == 5
+    assert info['clean_sample_count'] == 100
+    assert info['empirical_fpr'] == 0.05
+    assert "could not be met" in info['status_message']
+
+
+
