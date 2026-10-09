@@ -184,6 +184,15 @@ def compute_design_effect(
     design effect (Deff = 1 + (m_bar - 1) * rho_hat), effective sample size (N_eff),
     and adjusted 95% upper bound on False Positive Rate.
     
+    Note on Zero-False-Alarm Regime:
+    When total_fp == 0, sample variance of binary classifications is zero, making standard
+    binary ANOVA ICC degenerate (0/0). Rather than ignoring clustering and falling back to
+    unadjusted independence (which would assume completely uncorrelated observations), we estimate
+    the latent intra-cluster correlation (rho_hat) via one-way ANOVA over the continuous model anomaly
+    scores of clean negative windows across clusters. This serves as an empirical sensitivity analysis
+    proxy capturing latent model calibration clustering, yielding a penalizing design effect
+    (Deff = 1 + (m_bar - 1) * rho_hat) and conservative effective sample size (N_eff = N_clean / Deff).
+    
     Returns:
     --------
     (rho_hat, deff, n_eff, adjusted_fpr_95_upper)
@@ -220,7 +229,7 @@ def compute_design_effect(
     
     # When 0 binary false alarms are observed, binary sample variance is zero.
     # Rather than falling back to independence, estimate latent intra-cluster correlation (rho_hat)
-    # from the continuous model anomaly scores of clean negative windows across clusters.
+    # as an empirical sensitivity analysis proxy from continuous model anomaly scores of clean negative windows across clusters.
     if total_fp == 0 or p_hat == 0.0 or p_hat >= 1.0:
         neg_mask_all = (y_true == 0)
         clean_scores = y_pred[neg_mask_all]
@@ -370,17 +379,19 @@ def evaluate_model_on_loader(
             mid = all_match_ids[idx] if idx < len(all_match_ids) and all_match_ids[idx] else ''
             session_key = (mid, pid) if mid else pid
             if session_key not in session_map:
-                session_map[session_key] = {'targets': [], 'preds': [], 'match_id': mid}
+                session_map[session_key] = {'targets': [], 'preds': [], 'match_id': mid, 'player_id': pid}
             session_map[session_key]['targets'].append(all_targets[idx])
             session_map[session_key]['preds'].append(all_preds[idx])
             
         session_targets = []
         session_peak_preds = []
         session_match_ids = []
+        session_player_ids = []
         for skey, s_data in session_map.items():
             session_targets.append(int(max(s_data['targets'])))
             session_peak_preds.append(float(max(s_data['preds'])))
             session_match_ids.append(s_data.get('match_id', ''))
+            session_player_ids.append(str(s_data.get('player_id', '')))
             
         s_y_true = np.array(session_targets)
         s_y_pred = np.array(session_peak_preds)
@@ -410,9 +421,10 @@ def evaluate_model_on_loader(
                 all_match_ids, y_true, y_pred, operating_threshold
             )
             metrics['Window_Cluster_Bootstrap_FPR_95_Upper'] = metrics['Window_Match_Cluster_Bootstrap_FPR_95_Upper']
-            metrics['Session_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
+            metrics['Session_Match_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
                 session_match_ids, s_y_true, s_y_pred, operating_threshold
             )
+            metrics['Session_Cluster_Bootstrap_FPR_95_Upper'] = metrics['Session_Match_Cluster_Bootstrap_FPR_95_Upper']
             
             # 2. Match Design-Effect Adjustment (ICC rho_hat, Deff, N_eff)
             w_m_rho, w_m_deff, w_m_neff, w_m_adj_upper = compute_design_effect(
@@ -424,13 +436,17 @@ def evaluate_model_on_loader(
             metrics['Window_Match_Adjusted_FPR_95_Upper'] = w_m_adj_upper
             metrics['Window_Design_Effect_Adjusted_FPR_95_Upper'] = w_m_adj_upper
             
-            s_rho, s_deff, s_neff, s_adj_upper = compute_design_effect(
+            s_m_rho, s_m_deff, s_m_neff, s_m_adj_upper = compute_design_effect(
                 session_match_ids, s_y_true, s_y_pred, operating_threshold
             )
-            metrics['Session_ICC_Rho'] = s_rho
-            metrics['Session_Design_Effect'] = s_deff
-            metrics['Session_Effective_Sample_Size'] = s_neff
-            metrics['Session_Design_Effect_Adjusted_FPR_95_Upper'] = s_adj_upper
+            metrics['Session_Match_ICC_Rho'] = s_m_rho
+            metrics['Session_Match_Design_Effect'] = s_m_deff
+            metrics['Session_Match_Effective_Sample_Size'] = s_m_neff
+            metrics['Session_Match_Adjusted_FPR_95_Upper'] = s_m_adj_upper
+            metrics['Session_ICC_Rho'] = s_m_rho
+            metrics['Session_Design_Effect'] = s_m_deff
+            metrics['Session_Effective_Sample_Size'] = s_m_neff
+            metrics['Session_Design_Effect_Adjusted_FPR_95_Upper'] = s_m_adj_upper
 
         # 3. Player-Level Clustering (accounting for repeated player accounts across matches)
         if len(all_player_ids) > 0 and len(np.unique(all_player_ids)) > 1:
@@ -445,6 +461,24 @@ def evaluate_model_on_loader(
             metrics['Window_Player_Design_Effect'] = w_p_deff
             metrics['Window_Player_Effective_Sample_Size'] = w_p_neff
             metrics['Window_Player_Adjusted_FPR_95_Upper'] = w_p_adj_upper
+            
+            # Session Player Clustering
+            if len(session_player_ids) > 0 and len(np.unique(session_player_ids)) > 1:
+                metrics['Session_Player_Cluster_Bootstrap_FPR_95_Upper'] = compute_cluster_bootstrap_bounds(
+                    session_player_ids, s_y_true, s_y_pred, operating_threshold
+                )
+                s_p_rho, s_p_deff, s_p_neff, s_p_adj_upper = compute_design_effect(
+                    session_player_ids, s_y_true, s_y_pred, operating_threshold
+                )
+                metrics['Session_Player_ICC_Rho'] = s_p_rho
+                metrics['Session_Player_Design_Effect'] = s_p_deff
+                metrics['Session_Player_Effective_Sample_Size'] = s_p_neff
+                metrics['Session_Player_Adjusted_FPR_95_Upper'] = s_p_adj_upper
+                
+                if any(m for m in all_match_ids):
+                    s_cons_neff = min(s_m_neff, s_p_neff)
+                    metrics['Session_Conservative_Effective_Sample_Size'] = s_cons_neff
+                    metrics['Session_Conservative_Adjusted_FPR_95_Upper'] = max(s_m_adj_upper, s_p_adj_upper)
             
             # Conservative combined effective sample size between match and player clustering axes
             if any(m for m in all_match_ids):

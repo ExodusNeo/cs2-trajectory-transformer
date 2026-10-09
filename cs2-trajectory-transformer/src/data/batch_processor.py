@@ -278,3 +278,101 @@ def batch_process_demos(
                 
     logging.info(f"Batch completed: {total_extracted} total trajectory segments saved.")
     return total_extracted
+
+
+def audit_clean_atw_quota(
+    processed_dir: str, 
+    target_clean: int = 30000,
+    check_columns: bool = True
+) -> Dict[str, Union[int, float, bool]]:
+    """
+    Thesis Reference: Section 3.2.2 & Section 3.2.9 — Empirical Stopping Condition Audit.
+    Inspects processed Parquet inventory to verify progress toward the empirical stopping
+    condition of >= target_clean (default 30,000) clean ATW trajectory segments.
+    
+    Parameters:
+    -----------
+    processed_dir: str
+        Root directory containing processed ATW Parquet files (or 'clean' and 'cheaters' subdirs).
+    target_clean: int
+        Target count of verified clean ATWs (default 30,000 for Rule of Three FPR_95% <= 0.01%).
+    check_columns: bool
+        If True, reads the 'is_aimbot' column to strictly distinguish clean (0) vs cheater (1) segments.
+        If False, uses directory partitioning ('clean' vs 'cheaters') if available.
+        
+    Returns:
+    --------
+    Dict containing:
+      - 'clean_count': int, total verified clean ATWs (is_aimbot == 0)
+      - 'cheater_count': int, total verified cheater ATWs (is_aimbot == 1)
+      - 'total_count': int, total extracted ATWs
+      - 'target_clean': int, target quota
+      - 'quota_met': bool, True if clean_count >= target_clean
+      - 'progress_pct': float, clean_count / target_clean * 100.0
+      - 'deficit': int, max(0, target_clean - clean_count)
+    """
+    if not os.path.exists(processed_dir):
+        return {
+            'clean_count': 0,
+            'cheater_count': 0,
+            'total_count': 0,
+            'target_clean': int(target_clean),
+            'quota_met': False,
+            'progress_pct': 0.0,
+            'deficit': int(target_clean)
+        }
+        
+    pattern = os.path.join(processed_dir, "**", "*.parquet")
+    files = glob.glob(pattern, recursive=True)
+    if not files:
+        files = glob.glob(os.path.join(processed_dir, "*.parquet"))
+    files = list(set(files))
+    
+    clean_count = 0
+    cheater_count = 0
+    
+    # Try high-speed PyArrow reading if check_columns is enabled
+    if check_columns and files:
+        try:
+            import pyarrow.parquet as pq
+            for f in files:
+                try:
+                    tbl = pq.read_table(f, columns=['is_aimbot'])
+                    label = tbl['is_aimbot'][0].as_py()
+                    if label == 1:
+                        cheater_count += 1
+                    else:
+                        clean_count += 1
+                except Exception:
+                    # Fallback to directory structure
+                    if 'cheater' in f.lower():
+                        cheater_count += 1
+                    else:
+                        clean_count += 1
+        except ImportError:
+            for f in files:
+                if 'cheater' in f.lower():
+                    cheater_count += 1
+                else:
+                    clean_count += 1
+    else:
+        for f in files:
+            if 'cheater' in f.lower():
+                cheater_count += 1
+            else:
+                clean_count += 1
+                
+    total_count = clean_count + cheater_count
+    quota_met = (clean_count >= target_clean)
+    progress_pct = float(clean_count / max(1, target_clean) * 100.0)
+    deficit = int(max(0, target_clean - clean_count))
+    
+    return {
+        'clean_count': clean_count,
+        'cheater_count': cheater_count,
+        'total_count': total_count,
+        'target_clean': int(target_clean),
+        'quota_met': quota_met,
+        'progress_pct': progress_pct,
+        'deficit': deficit
+    }

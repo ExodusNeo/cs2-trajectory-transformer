@@ -28,7 +28,7 @@ from typing import List, Optional
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from data.demo_downloader import CS2ReplayDownloader
-from data.batch_processor import batch_process_demos
+from data.batch_processor import batch_process_demos, audit_clean_atw_quota
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -198,6 +198,9 @@ def main():
     parser.add_argument("--graduation_days", type=int, default=21, help="Days without cheating infractions before graduating staged match to clean (default: 21)")
     parser.add_argument("--extract", action="store_true", default=True, help="Auto-extract ATW telemetry after downloading")
     parser.add_argument("--workers", type=int, default=4, help="Parallel worker processes for feature extraction")
+    parser.add_argument("--target_clean_atws", type=int, default=30000, help="Target clean ATW quota for empirical stopping condition (default: 30000)")
+    parser.add_argument("--audit_clean_quota", action="store_true", default=False, help="Audit current processed Parquet inventory against clean ATW quota")
+    parser.add_argument("--crawl_until_quota", action="store_true", default=False, help="Continuously crawl and extract matches until target clean ATW quota is satisfied")
     
     args = parser.parse_args()
     downloader = CS2ReplayDownloader(base_dir=args.raw_dir)
@@ -206,6 +209,23 @@ def main():
     cheat_raw_path = os.path.join(args.raw_dir, "cheaters")
     clean_parquet_path = os.path.join(args.parquet_dir, "clean")
     cheat_parquet_path = os.path.join(args.parquet_dir, "cheaters")
+
+    if args.audit_clean_quota:
+        print("=" * 65)
+        print("EMPIRICAL STOPPING CONDITION AUDIT (CLEAN ATW QUOTA)")
+        print("=" * 65)
+        print(f"  Processed Directory: {args.parquet_dir}")
+        print(f"  Target Clean ATWs:   {args.target_clean_atws:,}")
+        print("=" * 65)
+        audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
+        print(f"  Verified Clean ATWs:   {audit_res['clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+        print(f"  Cheater ATWs:          {audit_res['cheater_count']:,}")
+        print(f"  Total Extracted ATWs:  {audit_res['total_count']:,}")
+        print(f"  Quota Satisfied:       {'YES [STOPPING CONDITION MET]' if audit_res['quota_met'] else 'NO [INGESTION REQUIRED]'}")
+        if not audit_res['quota_met']:
+            print(f"  Remaining Clean Gap:   {audit_res['deficit']:,} clean ATWs")
+        print("=" * 65)
+        return
 
     if args.process_only:
         print("=" * 65)
@@ -217,6 +237,8 @@ def main():
         clean_extracted = batch_process_demos(clean_raw_path, clean_parquet_path, is_cheater_dataset=False, max_workers=args.workers)
         cheat_extracted = batch_process_demos(cheat_raw_path, cheat_parquet_path, is_cheater_dataset=True, max_workers=args.workers)
         print(f"\n[OK] Processing Complete! Extracted {clean_extracted} clean segments and {cheat_extracted} cheater segments.")
+        audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
+        print(f"[*] Stopping Condition Audit: {audit_res['clean_count']:,} / {audit_res['target_clean']:,} clean ATWs ({audit_res['progress_pct']:.2f}%). Quota Met: {audit_res['quota_met']}")
         return
 
     crawler = FaceitMatchCrawler(api_key=args.api_key, base_dir=args.raw_dir)
@@ -326,7 +348,41 @@ def main():
                 dems = downloader.fetch_faceit_match_demo(item, api_key=crawler.api_key, is_cheater=is_cheat)
             downloaded_dems.extend(dems)
 
-    # Mode D: Specific players or Multi-Tier Auto Crawl (Clean)
+    # Mode D1: Continuous Ingestion until Clean ATW Quota is Satisfied
+    elif args.crawl_until_quota:
+        print("=" * 65)
+        print("PHASE 2: EMPIRICAL STOPPING CONDITION INGESTION LOOP")
+        print("=" * 65)
+        print(f"  Target Quota:    {args.target_clean_atws:,} Clean ATWs")
+        print(f"  Storage Target:  {args.raw_dir} (D: drive)")
+        print(f"  Batch Increment: {args.count} matches per iteration")
+        print("=" * 65)
+        
+        cycle = 1
+        while True:
+            audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
+            print(f"\n[*] Iteration {cycle}: Clean ATWs = {audit_res['clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+            if audit_res['quota_met']:
+                print(f"[OK] Stopping condition satisfied! Clean ATW count ({audit_res['clean_count']:,}) >= Quota ({audit_res['target_clean']:,}).")
+                break
+                
+            match_ids = crawler.crawl_tier_pool(tier=args.tier, target_count=args.count, matches_per_player=args.matches_per_player)
+            if not match_ids:
+                print("[!] No additional matches discovered in tier pool. Stopping ingestion loop.")
+                break
+                
+            cycle_dems = []
+            for mid in match_ids:
+                dems = downloader.fetch_faceit_match_demo(mid, api_key=crawler.api_key, is_cheater=False)
+                cycle_dems.extend(dems)
+                
+            if cycle_dems and args.extract:
+                batch_process_demos(clean_raw_path, clean_parquet_path, is_cheater_dataset=False, max_workers=args.workers)
+                
+            cycle += 1
+        return
+
+    # Mode D2: Specific players or Multi-Tier Auto Crawl (Clean)
     elif args.auto or args.players or crawler.api_key:
         print("=" * 65)
         print("PHASE 2: AUTOMATED MULTI-TIER CS2 REPLAY CRAWLER")
@@ -366,6 +422,10 @@ def main():
         print("   python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_player 1")
         print("5. Automated Match Spider (Scan Lobbies for Cheaters):")
         print("   python crawl_replays.py --scan_cheaters --count 5")
+        print("6. Audit Clean ATW Quota (Empirical Stopping Condition):")
+        print("   python crawl_replays.py --audit_clean_quota --target_clean_atws 30000")
+        print("7. Autonomous Ingestion Loop Until Clean ATW Quota is Satisfied:")
+        print("   python crawl_replays.py --crawl_until_quota --target_clean_atws 30000 --count 10")
         print("=" * 65)
 
     # Auto-extract ATW Telemetry Parquet if requested
@@ -379,6 +439,17 @@ def main():
         else:
             clean_ext = batch_process_demos(clean_raw_path, clean_parquet_path, is_cheater_dataset=False, max_workers=args.workers)
             print(f"[OK] Batch Feature Extraction Complete! Total Clean Segments on D: drive: {clean_ext}")
+            
+        # Report progress toward empirical stopping condition
+        audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
+        print("\n" + "=" * 65)
+        print("EMPIRICAL STOPPING CONDITION AUDIT")
+        print("=" * 65)
+        print(f"  Clean ATWs Accumulated: {audit_res['clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+        print(f"  Stopping Condition Met: {'YES [QUOTA SATISFIED]' if audit_res['quota_met'] else 'NO [INGESTION SHORTFALL]'}")
+        if not audit_res['quota_met']:
+            print(f"  Remaining Clean Gap:    {audit_res['deficit']:,} ATWs")
+        print("=" * 65)
 
 
 if __name__ == "__main__":
