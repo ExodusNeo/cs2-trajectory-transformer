@@ -212,18 +212,24 @@ def main():
 
     if args.audit_clean_quota:
         print("=" * 65)
-        print("EMPIRICAL STOPPING CONDITION AUDIT (CLEAN ATW QUOTA)")
+        print("EMPIRICAL STOPPING CONDITION AUDIT (TEST SPLIT QUOTA)")
         print("=" * 65)
-        print(f"  Processed Directory: {args.parquet_dir}")
-        print(f"  Target Clean ATWs:   {args.target_clean_atws:,}")
+        print(f"  Processed Directory:             {args.parquet_dir}")
+        print(f"  Target Clean ATWs (Test Split):  {args.target_clean_atws:,}")
         print("=" * 65)
         audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
-        print(f"  Verified Clean ATWs:   {audit_res['clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
-        print(f"  Cheater ATWs:          {audit_res['cheater_count']:,}")
-        print(f"  Total Extracted ATWs:  {audit_res['total_count']:,}")
-        print(f"  Quota Satisfied:       {'YES [STOPPING CONDITION MET]' if audit_res['quota_met'] else 'NO [INGESTION REQUIRED]'}")
+        print(f"  [Overall Corpus]")
+        print(f"    Total Clean ATWs:              {audit_res['overall_clean_count']:,}")
+        print(f"    Total Cheater ATWs:            {audit_res['overall_cheater_count']:,}")
+        print(f"    Total Parquet Segments:        {audit_res['overall_total_count']:,}")
+        print(f"  [Held-Out Test Partition (Nominal ~10% Split)]")
+        print(f"    Verified Clean Test ATWs:      {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+        print(f"    Cheater Test ATWs:             {audit_res['test_cheater_count']:,}")
+        print(f"    Total Test Segments:           {audit_res['test_total_count']:,}")
+        print("-" * 65)
+        print(f"  Test Quota Satisfied:            {'YES [STOPPING CONDITION MET]' if audit_res['quota_met'] else 'NO [INGESTION REQUIRED]'}")
         if not audit_res['quota_met']:
-            print(f"  Remaining Clean Gap:   {audit_res['deficit']:,} clean ATWs")
+            print(f"  Remaining Clean Gap (Test):      {audit_res['deficit']:,} clean ATWs")
         print("=" * 65)
         return
 
@@ -238,7 +244,7 @@ def main():
         cheat_extracted = batch_process_demos(cheat_raw_path, cheat_parquet_path, is_cheater_dataset=True, max_workers=args.workers)
         print(f"\n[OK] Processing Complete! Extracted {clean_extracted} clean segments and {cheat_extracted} cheater segments.")
         audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
-        print(f"[*] Stopping Condition Audit: {audit_res['clean_count']:,} / {audit_res['target_clean']:,} clean ATWs ({audit_res['progress_pct']:.2f}%). Quota Met: {audit_res['quota_met']}")
+        print(f"[*] Stopping Condition Audit: Test Clean={audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%) | Overall Clean={audit_res['overall_clean_count']:,}. Quota Met: {audit_res['quota_met']}")
         return
 
     crawler = FaceitMatchCrawler(api_key=args.api_key, base_dir=args.raw_dir)
@@ -353,17 +359,17 @@ def main():
         print("=" * 65)
         print("PHASE 2: EMPIRICAL STOPPING CONDITION INGESTION LOOP")
         print("=" * 65)
-        print(f"  Target Quota:    {args.target_clean_atws:,} Clean ATWs")
-        print(f"  Storage Target:  {args.raw_dir} (D: drive)")
-        print(f"  Batch Increment: {args.count} matches per iteration")
+        print(f"  Target Quota (Test Split): {args.target_clean_atws:,} Clean ATWs")
+        print(f"  Storage Target:            {args.raw_dir} (D: drive)")
+        print(f"  Batch Increment:           {args.count} matches per iteration")
         print("=" * 65)
         
         cycle = 1
         while True:
             audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
-            print(f"\n[*] Iteration {cycle}: Clean ATWs = {audit_res['clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+            print(f"\n[*] Iteration {cycle}: Test Split Clean = {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%) | Overall Clean = {audit_res['overall_clean_count']:,}")
             if audit_res['quota_met']:
-                print(f"[OK] Stopping condition satisfied! Clean ATW count ({audit_res['clean_count']:,}) >= Quota ({audit_res['target_clean']:,}).")
+                print(f"[OK] Stopping condition satisfied! Held-out test clean count ({audit_res['test_clean_count']:,}) >= Target ({audit_res['target_clean']:,}).")
                 break
                 
             match_ids = crawler.crawl_tier_pool(tier=args.tier, target_count=args.count, matches_per_player=args.matches_per_player)
@@ -422,9 +428,9 @@ def main():
         print("   python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_player 1")
         print("5. Automated Match Spider (Scan Lobbies for Cheaters):")
         print("   python crawl_replays.py --scan_cheaters --count 5")
-        print("6. Audit Clean ATW Quota (Empirical Stopping Condition):")
+        print("6. Audit Clean ATW Quota (Empirical Stopping Condition on Test Split):")
         print("   python crawl_replays.py --audit_clean_quota --target_clean_atws 30000")
-        print("7. Autonomous Ingestion Loop Until Clean ATW Quota is Satisfied:")
+        print("7. Autonomous Ingestion Loop Until Test Split Quota is Satisfied:")
         print("   python crawl_replays.py --crawl_until_quota --target_clean_atws 30000 --count 10")
         print("=" * 65)
 
@@ -443,12 +449,13 @@ def main():
         # Report progress toward empirical stopping condition
         audit_res = audit_clean_atw_quota(args.parquet_dir, target_clean=args.target_clean_atws)
         print("\n" + "=" * 65)
-        print("EMPIRICAL STOPPING CONDITION AUDIT")
+        print("EMPIRICAL STOPPING CONDITION AUDIT (TEST SPLIT)")
         print("=" * 65)
-        print(f"  Clean ATWs Accumulated: {audit_res['clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
-        print(f"  Stopping Condition Met: {'YES [QUOTA SATISFIED]' if audit_res['quota_met'] else 'NO [INGESTION SHORTFALL]'}")
+        print(f"  Overall Clean ATWs:              {audit_res['overall_clean_count']:,}")
+        print(f"  Held-Out Test Clean ATWs:        {audit_res['test_clean_count']:,} / {audit_res['target_clean']:,} ({audit_res['progress_pct']:.2f}%)")
+        print(f"  Stopping Condition Met (Test):   {'YES [QUOTA SATISFIED]' if audit_res['quota_met'] else 'NO [INGESTION SHORTFALL]'}")
         if not audit_res['quota_met']:
-            print(f"  Remaining Clean Gap:    {audit_res['deficit']:,} ATWs")
+            print(f"  Remaining Clean Gap (Test):      {audit_res['deficit']:,} ATWs")
         print("=" * 65)
 
 

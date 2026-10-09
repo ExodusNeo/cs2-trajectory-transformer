@@ -214,26 +214,28 @@ def compute_dataset_statistics(
     return mean, std
 
 
-def create_partitioned_dataloaders(
+def partition_dataset_files(
     data_dir: str,
     train_ratio: float = 0.80,
     val_ratio: float = 0.10,
     test_ratio: float = 0.10,
-    batch_size: int = 32,
-    seed: int = 42,
-    feature_cols: Optional[List[str]] = None,
-    max_seq_len: int = 512,
-    use_global_norm: bool = False,
-    scaler_save_path: Optional[str] = None,
-    scaler_load_path: Optional[str] = None
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    seed: int = 42
+) -> Tuple[List[str], List[str], List[str]]:
     """
-    Partitions dataset by connected components of Match-ID and Player-ID to strictly prevent data leakage.
+    Partitions Parquet files by connected components of Match-ID and Player-ID
+    to strictly prevent data leakage across splits.
     Guarantees:
       P_train ∩ P_test = ∅
       M_train ∩ M_test = ∅
+      
+    Returns:
+    --------
+    (train_files, val_files, test_files)
     """
-    files = glob.glob(os.path.join(data_dir, "*.parquet"))
+    files = glob.glob(os.path.join(data_dir, "**", "*.parquet"), recursive=True)
+    if not files:
+        files = glob.glob(os.path.join(data_dir, "*.parquet"))
+    files = sorted(list(set(files)))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {data_dir}")
         
@@ -277,12 +279,58 @@ def create_partitioned_dataloaders(
                         queue.append(next_m)
         clusters.append((c_matches, c_players))
         
-    rng = np.random.default_rng(seed)
-    cluster_indices = np.arange(len(clusters))
-    rng.shuffle(cluster_indices)
-    
-    # If multiple independent clusters exist, partition by clusters
-    if len(clusters) >= 3:
+    # Classify clusters by ground-truth match labels (clean vs cheater)
+    match_labels = {}
+    for m, group in df_meta.groupby('match_id'):
+        sample_f = group['fpath'].iloc[0]
+        try:
+            import pyarrow.parquet as pq
+            tbl = pq.read_table(sample_f, columns=['is_aimbot'])
+            match_labels[m] = int(tbl['is_aimbot'][0].as_py())
+        except Exception:
+            match_labels[m] = 1 if ('cheater' in sample_f.lower() or 'cheat' in sample_f.lower()) else 0
+
+    clean_clusters = [c for c in clusters if all(match_labels.get(m, 0) == 0 for m in c[0])]
+    cheat_clusters = [c for c in clusters if any(match_labels.get(m, 0) == 1 for m in c[0])]
+
+    def _split_cluster_group(group_list: List, tr_r: float, va_r: float, seed_val: int) -> Tuple[List, List, List]:
+        if not group_list:
+            return [], [], []
+        r = np.random.default_rng(seed_val)
+        indices = np.arange(len(group_list))
+        r.shuffle(indices)
+        n = len(group_list)
+        if n >= 3:
+            n_tr = max(1, int(n * tr_r))
+            n_va = max(1, int(n * va_r))
+            if n_tr + n_va >= n:
+                n_tr = max(1, n - 2)
+                n_va = 1
+            return [group_list[i] for i in indices[:n_tr]], [group_list[i] for i in indices[n_tr:n_tr+n_va]], [group_list[i] for i in indices[n_tr+n_va:]]
+        elif n == 2:
+            return [group_list[indices[0]]], [], [group_list[indices[1]]]
+        else:
+            return [group_list[0]], [], []
+
+    # Stratified cluster partitioning across classes
+    if len(clean_clusters) >= 3 and len(cheat_clusters) >= 3:
+        tr_clean, val_clean, test_clean = _split_cluster_group(clean_clusters, train_ratio, val_ratio, seed)
+        tr_cheat, val_cheat, test_cheat = _split_cluster_group(cheat_clusters, train_ratio, val_ratio, seed + 1)
+        train_clusters = tr_clean + tr_cheat
+        val_clusters = val_clean + val_cheat
+        test_clusters = test_clean + test_cheat
+        
+        train_matches = set().union(*[c[0] for c in train_clusters])
+        val_matches = set().union(*[c[0] for c in val_clusters])
+        test_matches = set().union(*[c[0] for c in test_clusters])
+        
+        train_files = df_meta[df_meta['match_id'].isin(train_matches)]['fpath'].tolist()
+        val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
+        test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
+    elif len(clusters) >= 3:
+        rng = np.random.default_rng(seed)
+        cluster_indices = np.arange(len(clusters))
+        rng.shuffle(cluster_indices)
         n_c = len(clusters)
         n_train = max(1, int(n_c * train_ratio))
         n_val = max(1, int(n_c * val_ratio))
@@ -349,6 +397,36 @@ def create_partitioned_dataloaders(
                 "The match-player connectivity graph is too densely connected across the current matches "
                 "to yield disjoint non-empty partitions. Additional independent matches are required."
             )
+
+    return train_files, val_files, test_files
+
+
+def create_partitioned_dataloaders(
+    data_dir: str,
+    train_ratio: float = 0.80,
+    val_ratio: float = 0.10,
+    test_ratio: float = 0.10,
+    batch_size: int = 32,
+    seed: int = 42,
+    feature_cols: Optional[List[str]] = None,
+    max_seq_len: int = 512,
+    use_global_norm: bool = False,
+    scaler_save_path: Optional[str] = None,
+    scaler_load_path: Optional[str] = None
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Partitions dataset by connected components of Match-ID and Player-ID to strictly prevent data leakage.
+    Guarantees:
+      P_train ∩ P_test = ∅
+      M_train ∩ M_test = ∅
+    """
+    train_files, val_files, test_files = partition_dataset_files(
+        data_dir,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        seed=seed
+    )
 
         
     global_mean, global_std = None, None

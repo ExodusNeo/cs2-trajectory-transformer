@@ -280,58 +280,10 @@ def batch_process_demos(
     return total_extracted
 
 
-def audit_clean_atw_quota(
-    processed_dir: str, 
-    target_clean: int = 30000,
-    check_columns: bool = True
-) -> Dict[str, Union[int, float, bool]]:
-    """
-    Thesis Reference: Section 3.2.2 & Section 3.2.9 — Empirical Stopping Condition Audit.
-    Inspects processed Parquet inventory to verify progress toward the empirical stopping
-    condition of >= target_clean (default 30,000) clean ATW trajectory segments.
-    
-    Parameters:
-    -----------
-    processed_dir: str
-        Root directory containing processed ATW Parquet files (or 'clean' and 'cheaters' subdirs).
-    target_clean: int
-        Target count of verified clean ATWs (default 30,000 for Rule of Three FPR_95% <= 0.01%).
-    check_columns: bool
-        If True, reads the 'is_aimbot' column to strictly distinguish clean (0) vs cheater (1) segments.
-        If False, uses directory partitioning ('clean' vs 'cheaters') if available.
-        
-    Returns:
-    --------
-    Dict containing:
-      - 'clean_count': int, total verified clean ATWs (is_aimbot == 0)
-      - 'cheater_count': int, total verified cheater ATWs (is_aimbot == 1)
-      - 'total_count': int, total extracted ATWs
-      - 'target_clean': int, target quota
-      - 'quota_met': bool, True if clean_count >= target_clean
-      - 'progress_pct': float, clean_count / target_clean * 100.0
-      - 'deficit': int, max(0, target_clean - clean_count)
-    """
-    if not os.path.exists(processed_dir):
-        return {
-            'clean_count': 0,
-            'cheater_count': 0,
-            'total_count': 0,
-            'target_clean': int(target_clean),
-            'quota_met': False,
-            'progress_pct': 0.0,
-            'deficit': int(target_clean)
-        }
-        
-    pattern = os.path.join(processed_dir, "**", "*.parquet")
-    files = glob.glob(pattern, recursive=True)
-    if not files:
-        files = glob.glob(os.path.join(processed_dir, "*.parquet"))
-    files = list(set(files))
-    
+def _count_parquet_labels(files: List[str], check_columns: bool = True) -> Tuple[int, int]:
+    """Helper to count clean (0) and cheater (1) segments across a list of Parquet files."""
     clean_count = 0
     cheater_count = 0
-    
-    # Try high-speed PyArrow reading if check_columns is enabled
     if check_columns and files:
         try:
             import pyarrow.parquet as pq
@@ -344,35 +296,142 @@ def audit_clean_atw_quota(
                     else:
                         clean_count += 1
                 except Exception:
-                    # Fallback to directory structure
                     if 'cheater' in f.lower():
                         cheater_count += 1
                     else:
                         clean_count += 1
+            return clean_count, cheater_count
         except ImportError:
-            for f in files:
-                if 'cheater' in f.lower():
-                    cheater_count += 1
-                else:
-                    clean_count += 1
-    else:
-        for f in files:
-            if 'cheater' in f.lower():
-                cheater_count += 1
-            else:
-                clean_count += 1
+            pass
+    for f in files:
+        if 'cheater' in f.lower():
+            cheater_count += 1
+        else:
+            clean_count += 1
+    return clean_count, cheater_count
+
+
+def audit_clean_atw_quota(
+    processed_dir: str, 
+    target_clean: int = 30000,
+    check_columns: bool = True,
+    partition_test_split: bool = True,
+    train_ratio: float = 0.80,
+    val_ratio: float = 0.10,
+    test_ratio: float = 0.10,
+    seed: int = 42
+) -> Dict[str, Union[int, float, bool]]:
+    """
+    Thesis Reference: Section 3.2.2 & Section 3.2.9 — Empirical Stopping Condition Audit.
+    Inspects processed Parquet inventory to verify progress toward the empirical stopping
+    condition of >= target_clean (default 30,000) clean ATW trajectory segments in the
+    held-out test split.
+    
+    Parameters:
+    -----------
+    processed_dir: str
+        Root directory containing processed ATW Parquet files (or 'clean' and 'cheaters' subdirs).
+    target_clean: int
+        Target count of verified clean ATWs (default 30,000 for Rule of Three FPR_95% <= 0.01%
+        in the held-out test split).
+    check_columns: bool
+        If True, reads the 'is_aimbot' column to strictly distinguish clean (0) vs cheater (1) segments.
+    partition_test_split: bool
+        If True, applies the strict zero-leakage bipartite graph partitioner to extract the held-out
+        test split files, auditing clean ATW quota directly against the test partition.
+        If False, audits across the entire overall corpus directory.
+        
+    Returns:
+    --------
+    Dict containing:
+      - 'test_clean_count': int, verified clean ATWs in held-out test partition
+      - 'test_cheater_count': int, cheater ATWs in held-out test partition
+      - 'test_total_count': int, total ATWs in held-out test partition
+      - 'overall_clean_count': int, verified clean ATWs across entire corpus
+      - 'overall_cheater_count': int, cheater ATWs across entire corpus
+      - 'overall_total_count': int, total ATWs across entire corpus
+      - 'clean_count': int, evaluated clean count (test_clean_count if partitioned, else overall)
+      - 'cheater_count': int, evaluated cheater count
+      - 'total_count': int, evaluated total count
+      - 'target_clean': int, target quota
+      - 'quota_met': bool, True if clean_count >= target_clean
+      - 'progress_pct': float, clean_count / target_clean * 100.0
+      - 'deficit': int, max(0, target_clean - clean_count)
+      - 'is_test_split_audited': bool, True if quota is evaluated on held-out test partition
+    """
+    if not os.path.exists(processed_dir):
+        return {
+            'test_clean_count': 0,
+            'test_cheater_count': 0,
+            'test_total_count': 0,
+            'overall_clean_count': 0,
+            'overall_cheater_count': 0,
+            'overall_total_count': 0,
+            'clean_count': 0,
+            'cheater_count': 0,
+            'total_count': 0,
+            'target_clean': int(target_clean),
+            'quota_met': False,
+            'progress_pct': 0.0,
+            'deficit': int(target_clean),
+            'is_test_split_audited': False
+        }
+        
+    pattern = os.path.join(processed_dir, "**", "*.parquet")
+    files = glob.glob(pattern, recursive=True)
+    if not files:
+        files = glob.glob(os.path.join(processed_dir, "*.parquet"))
+    files = list(set(files))
+    
+    overall_clean, overall_cheater = _count_parquet_labels(files, check_columns=check_columns)
+    overall_total = overall_clean + overall_cheater
+    
+    test_clean = 0
+    test_cheater = 0
+    is_test_audited = False
+    
+    if partition_test_split and len(files) > 0:
+        try:
+            try:
+                from .dataset import partition_dataset_files
+            except ImportError:
+                from data.dataset import partition_dataset_files
                 
-    total_count = clean_count + cheater_count
-    quota_met = (clean_count >= target_clean)
-    progress_pct = float(clean_count / max(1, target_clean) * 100.0)
-    deficit = int(max(0, target_clean - clean_count))
+            _, _, test_files = partition_dataset_files(
+                processed_dir,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                test_ratio=test_ratio,
+                seed=seed
+            )
+            test_clean, test_cheater = _count_parquet_labels(test_files, check_columns=check_columns)
+            is_test_audited = True
+        except Exception as e:
+            logging.info(f"Dataset cannot yet be partitioned into disjoint test split ({e}); falling back to overall corpus audit.")
+            test_clean, test_cheater = 0, 0
+            is_test_audited = False
+            
+    eval_clean = test_clean if is_test_audited else overall_clean
+    eval_cheater = test_cheater if is_test_audited else overall_cheater
+    eval_total = eval_clean + eval_cheater
+    
+    quota_met = (eval_clean >= target_clean)
+    progress_pct = float(eval_clean / max(1, target_clean) * 100.0)
+    deficit = int(max(0, target_clean - eval_clean))
     
     return {
-        'clean_count': clean_count,
-        'cheater_count': cheater_count,
-        'total_count': total_count,
+        'test_clean_count': test_clean,
+        'test_cheater_count': test_cheater,
+        'test_total_count': test_clean + test_cheater,
+        'overall_clean_count': overall_clean,
+        'overall_cheater_count': overall_cheater,
+        'overall_total_count': overall_total,
+        'clean_count': eval_clean,
+        'cheater_count': eval_cheater,
+        'total_count': eval_total,
         'target_clean': int(target_clean),
         'quota_met': quota_met,
         'progress_pct': progress_pct,
-        'deficit': deficit
+        'deficit': deficit,
+        'is_test_split_audited': is_test_audited
     }
