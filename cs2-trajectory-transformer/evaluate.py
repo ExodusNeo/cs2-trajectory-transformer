@@ -39,7 +39,15 @@ def calibrate_operating_threshold(
 ) -> Union[float, Tuple[float, Dict[str, Any]]]:
     """
     Calibrates operational decision threshold tau* on the validation partition.
-    Ensures empirical validation FPR <= target_fpr while maximizing sensitivity.
+    Ensures empirical validation FPR <= target_fpr.
+
+    Sensitivity / TPR Behavior:
+    - Maximizing sensitivity is only possible when validation includes positive cheater
+      samples (dual-class validation).
+    - On clean-only validation splits (cheater samples absent), True Positive Rate (TPR /
+      sensitivity) cannot be measured or maximized; calibration selects the minimal
+      threshold satisfying the FPR constraint, and validation TPR is kept strictly
+      marked unavailable (None).
 
     Comparison Rule:
     - Classification decision uses: y_pred_bin = (y_prob >= tau).
@@ -51,10 +59,10 @@ def calibrate_operating_threshold(
       If clean samples are absent (e.g. cheater-only validation), FPR calibration is unavailable,
       and an uncalibrated default threshold (0.5000) is returned with is_calibrated=False.
     - If clean samples are present but cheater samples are absent (clean-only validation),
-      tau* is calibrated to achieve empirical FPR <= target_fpr on clean samples. Validation
-      TPR (sensitivity) is kept strictly marked unavailable (None) due to absence of cheaters.
-    - If both classes are present, tau* is calibrated to satisfy empirical FPR <= target_fpr
-      while maximizing empirical validation TPR.
+      tau* is calibrated to achieve empirical FPR <= target_fpr on clean samples by selecting
+      the minimal valid threshold. Validation TPR is kept strictly marked unavailable (None).
+    - If both classes are present (dual-class validation), tau* is calibrated to satisfy
+      empirical FPR <= target_fpr while maximizing empirical validation TPR (sensitivity).
     - If no valid threshold in [0.0, 1.0] satisfies empirical FPR <= target_fpr (e.g. clean
       scores at 1.0 or ties exceeding allowed false alarms), calibration is marked unmet
       (is_calibrated=False, calibration_mode='unmet'), and default fallback 0.5000 is returned.
@@ -64,7 +72,9 @@ def calibrate_operating_threshold(
       For instance, observing 0 FPs in N=600 validation duels yields a Rule-of-Three one-sided
       95% upper bound of ~3/600 = 0.50%, not 0.01%.
     - The returned info dictionary explicitly reports observed false-positive count, clean sample
-      count, empirical FPR, and the one-sided 95% confidence bound (Rule of Three or Clopper-Pearson).
+      count, empirical FPR, and the one-sided 95% confidence bound (Rule of Three or Clopper-Pearson),
+      guaranteed to be finite and bounded in [0.0, 1.0] for all edge cases (including when all
+      samples are false positives).
     """
     y_val_arr = np.asarray(y_val)
     y_prob_arr = np.asarray(y_val_prob)
@@ -106,9 +116,14 @@ def calibrate_operating_threshold(
     max_allowed_fp = int(np.floor(n_clean * target_fpr))
 
     def _calc_conf_bound(fp_cnt: int, total_clean: int) -> float:
-        if fp_cnt == 0:
-            return float(3.0 / total_clean)
-        return float(beta.ppf(0.95, fp_cnt + 1, total_clean - fp_cnt))
+        if total_clean <= 0:
+            return 1.0
+        if fp_cnt <= 0:
+            return float(min(1.0, 3.0 / total_clean))
+        if fp_cnt >= total_clean:
+            return 1.0
+        val = float(beta.ppf(0.95, fp_cnt + 1, total_clean - fp_cnt))
+        return float(np.clip(val, 0.0, 1.0))
 
     if n_cheat == 0:
         # Clean-only validation: Calibrate threshold to achieve FPR <= target_fpr on clean samples.
@@ -298,10 +313,12 @@ def compute_metrics(
     if n_neg > 0:
         if fp_at_tau == 0:
             # Rule of Three: -ln(0.05) / N ~ 3 / N
-            fpr_95_ci_upper = float(3.0 / n_neg)
+            fpr_95_ci_upper = float(min(1.0, 3.0 / n_neg))
+        elif fp_at_tau >= n_neg:
+            fpr_95_ci_upper = 1.0
         else:
             from scipy.stats import beta
-            fpr_95_ci_upper = float(beta.ppf(0.95, fp_at_tau + 1, n_neg - fp_at_tau))
+            fpr_95_ci_upper = float(np.clip(beta.ppf(0.95, fp_at_tau + 1, n_neg - fp_at_tau), 0.0, 1.0))
     else:
         fpr_95_ci_upper = 1.0
     
@@ -620,10 +637,12 @@ def evaluate_model_on_loader(
         metrics['Session_FPR'] = float(s_fp / max(1, s_neg))
         if s_neg > 0:
             if s_fp == 0:
-                s_nominal_upper = float(3.0 / s_neg)
+                s_nominal_upper = float(min(1.0, 3.0 / s_neg))
+            elif s_fp >= s_neg:
+                s_nominal_upper = 1.0
             else:
                 from scipy.stats import beta
-                s_nominal_upper = float(beta.ppf(0.95, s_fp + 1, s_neg - s_fp))
+                s_nominal_upper = float(np.clip(beta.ppf(0.95, s_fp + 1, s_neg - s_fp), 0.0, 1.0))
         else:
             s_nominal_upper = 1.0
         metrics['Session_Nominal_FPR_95_Upper'] = s_nominal_upper
@@ -731,9 +750,11 @@ def evaluate_model_on_loader(
             metrics['Match_FPR'] = float(m_fp / max(1, m_neg))
             if m_neg > 0:
                 if m_fp == 0:
-                    m_nominal_upper = float(3.0 / m_neg)
+                    m_nominal_upper = float(min(1.0, 3.0 / m_neg))
+                elif m_fp >= m_neg:
+                    m_nominal_upper = 1.0
                 else:
-                    m_nominal_upper = float(beta.ppf(0.95, m_fp + 1, m_neg - m_fp))
+                    m_nominal_upper = float(np.clip(beta.ppf(0.95, m_fp + 1, m_neg - m_fp), 0.0, 1.0))
             else:
                 m_nominal_upper = 1.0
             metrics['Match_Nominal_FPR_95_Upper'] = m_nominal_upper

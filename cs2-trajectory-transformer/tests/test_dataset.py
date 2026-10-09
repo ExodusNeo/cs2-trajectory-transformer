@@ -590,6 +590,8 @@ def test_calibrate_operating_threshold_scores_at_one():
     If the count of 1.0 scores exceeds allowed false positives, calibration
     must be marked unmet (is_calibrated=False, calibration_mode='unmet')
     and return fallback 0.5000.
+    Verifies that the reported confidence bound is finite and equals 1.0,
+    and that statistical_evidence contains no NaN.
     """
     from evaluate import calibrate_operating_threshold
 
@@ -606,6 +608,57 @@ def test_calibrate_operating_threshold_scores_at_one():
     assert info['empirical_fpr'] == 1.0
     assert info['empirical_tpr'] is None
     assert "could not be met" in info['status_message']
+
+    # Verify reported confidence bound is finite and equals 1.0 when all observations are false positives
+    assert np.isfinite(info['nominal_fpr_95_upper'])
+    assert info['nominal_fpr_95_upper'] == 1.0
+
+    # Verify statistical evidence contains no NaN
+    assert "nan" not in info['statistical_evidence'].lower()
+    assert "NaN" not in info['statistical_evidence']
+
+
+def test_calibrate_operating_threshold_confidence_bound_boundary_cases():
+    """
+    Verify confidence bound calculation across edge cases:
+    - fp_count == 0 -> Rule of Three: min(1.0, 3.0 / N)
+    - fp_count == total_clean -> exactly 1.0 (no NaN from beta.ppf with zero shape param)
+    - fp_count > total_clean -> capped at 1.0
+    - total_clean <= 0 -> 1.0
+    - 0 < fp_count < total_clean -> valid probability bound in [0.0, 1.0]
+    """
+    from evaluate import calibrate_operating_threshold
+
+    # Case 1: All clean samples are false positives (fp == N == 20)
+    y_val_all_fp = np.array([0] * 20)
+    probs_all_fp = np.array([1.0] * 20)
+    _, info_all_fp = calibrate_operating_threshold(y_val_all_fp, probs_all_fp, target_fpr=0.01, return_info=True)
+    assert np.isfinite(info_all_fp['nominal_fpr_95_upper'])
+    assert info_all_fp['nominal_fpr_95_upper'] == 1.0
+    assert "nan" not in info_all_fp['statistical_evidence'].lower()
+
+    # Case 2: Zero false positives (fp == 0, N == 100)
+    y_val_zero_fp = np.array([0] * 100)
+    probs_zero_fp = np.array([0.01] * 100)
+    _, info_zero_fp = calibrate_operating_threshold(y_val_zero_fp, probs_zero_fp, target_fpr=0.01, return_info=True)
+    assert np.isfinite(info_zero_fp['nominal_fpr_95_upper'])
+    assert info_zero_fp['nominal_fpr_95_upper'] == pytest.approx(3.0 / 100, rel=1e-3)
+    assert "nan" not in info_zero_fp['statistical_evidence'].lower()
+
+    # Case 3: Small sample zero false positives (N == 1 -> Rule of Three 3/1 capped at 1.0)
+    y_val_one = np.array([0] * 1)
+    probs_one = np.array([0.01] * 1)
+    _, info_one = calibrate_operating_threshold(y_val_one, probs_one, target_fpr=1.0, return_info=True)
+    assert np.isfinite(info_one['nominal_fpr_95_upper'])
+    assert info_one['nominal_fpr_95_upper'] == 1.0
+
+    # Case 4: Interior false positives (0 < fp < N)
+    y_val_interior = np.array([0] * 100)
+    probs_interior = np.array([0.01] * 97 + [0.80] * 3)
+    _, info_interior = calibrate_operating_threshold(y_val_interior, probs_interior, target_fpr=0.05, return_info=True)
+    assert np.isfinite(info_interior['nominal_fpr_95_upper'])
+    assert 0.0 < info_interior['nominal_fpr_95_upper'] <= 1.0
+    assert "nan" not in info_interior['statistical_evidence'].lower()
 
 
 def test_calibrate_operating_threshold_target_cannot_be_met():
