@@ -8,6 +8,7 @@ Features:
 
 import os
 import glob
+import logging
 import numpy as np
 import pandas as pd
 import torch
@@ -225,9 +226,15 @@ def partition_dataset_files(
     Partitions Parquet files by connected components of Match-ID and Player-ID
     to strictly prevent data leakage across splits.
     Guarantees:
-      P_train ∩ P_test = ∅
-      M_train ∩ M_test = ∅
-      
+      P_train ∩ P_val = ∅, P_train ∩ P_test = ∅, P_val ∩ P_test = ∅
+      M_train ∩ M_val = ∅, M_train ∩ M_test = ∅, M_val ∩ M_test = ∅
+
+    Connected components are preserved intact as atomic units.
+    Never silently returns an empty train, validation, or test partition.
+    When available components permit (clean >= 2, cheater >= 2, total >= 5),
+    Train and held-out Test are guaranteed to contain both classes.
+    If component counts make valid partitioning impossible, raises descriptive ValueError.
+
     Returns:
     --------
     (train_files, val_files, test_files)
@@ -300,138 +307,171 @@ def partition_dataset_files(
 
     clean_clusters = [c for c in clusters if all(match_labels.get(m, 0) == 0 for m in c[0])]
     cheat_clusters = [c for c in clusters if any(match_labels.get(m, 0) == 1 for m in c[0])]
+    C = len(clean_clusters)
+    X = len(cheat_clusters)
+    total_clusters = len(clusters)
 
-    def _split_cluster_group(group_list: List, tr_r: float, va_r: float, seed_val: int) -> Tuple[List, List, List]:
-        if not group_list:
-            return [], [], []
-        r = np.random.default_rng(seed_val)
-        indices = np.arange(len(group_list))
-        r.shuffle(indices)
-        n = len(group_list)
-        if n >= 3:
-            n_tr = max(1, int(n * tr_r))
-            n_va = max(1, int(n * va_r))
-            if n_tr + n_va >= n:
-                n_tr = max(1, n - 2)
-                n_va = 1
-            return [group_list[i] for i in indices[:n_tr]], [group_list[i] for i in indices[n_tr:n_tr+n_va]], [group_list[i] for i in indices[n_tr+n_va:]]
-        elif n == 2:
-            # Guarantee that both Train and Test receive 1 cluster when n == 2
-            return [group_list[indices[0]]], [], [group_list[indices[1]]]
+    if total_clusters == 0:
+        raise ValueError(f"No connected components found in {data_dir}. Cannot partition dataset.")
+
+    # Feasibility validation under strict zero-leakage constraints
+    if C > 0 and X > 0:
+        # Two-class dataset
+        if C == 2 and X == 2:
+            raise ValueError(
+                f"Infeasible zero-leakage dataset partition: found {C} clean and {X} cheater connected components "
+                f"(total={total_clusters}). Allocating both classes to Train (1 clean, 1 cheater) and held-out Test "
+                f"(1 clean, 1 cheater) consumes all 4 components, leaving Validation empty. "
+                f"To guarantee non-empty Train, Validation, and Test partitions with two-class representation in Train "
+                f"and Test, at least 5 connected components are required (e.g., clean >= 3 and cheater >= 2, or "
+                f"clean >= 2 and cheater >= 3). Cannot partition without leaving Validation empty or violating zero-leakage."
+            )
+        if (C < 2 and X < 3) or (X < 2 and C < 3):
+            raise ValueError(
+                f"Infeasible zero-leakage dataset partition: found {C} clean and {X} cheater connected components "
+                f"(total={total_clusters}). Creating non-empty Train, Validation, and Test partitions under strict "
+                f"zero-leakage constraints requires at least 4 components when one class has 1 component "
+                f"(allocating 1 to Train and 3+ of the other class across Train, Val, Test), or at least 5 components "
+                f"when both classes have at least 2 components. Found clean={C}, cheater={X}."
+            )
+    else:
+        # Single-class dataset (pure clean or pure cheater)
+        if total_clusters < 3:
+            raise ValueError(
+                f"Strict zero-leakage partitioning requires at least 3 connected components to form non-empty "
+                f"Train, Validation, and Test partitions, but found only {total_clusters} component(s) "
+                f"(clean={C}, cheater={X}). Under strict zero-leakage constraints, connected components cannot "
+                f"be split across partitions. Additional independent matches are required."
+            )
+
+    def _split_clusters_three_way(
+        cluster_list: List,
+        tr_r: float,
+        va_r: float,
+        seed_val: int
+    ) -> Tuple[List, List, List]:
+        """Splits a list of >= 3 clusters into Train, Val, and Test, ensuring all three are non-empty."""
+        n = len(cluster_list)
+        assert n >= 3, f"Requires at least 3 clusters, got {n}"
+        rng = np.random.default_rng(seed_val)
+        indices = np.arange(n)
+        rng.shuffle(indices)
+
+        n_tr = max(1, int(round(n * tr_r)))
+        n_va = max(1, int(round(n * va_r)))
+        if n_tr + n_va >= n:
+            n_tr = max(1, n - 2)
+            n_va = 1
+        n_te = n - n_tr - n_va
+        if n_te < 1:
+            n_te = 1
+            if n_tr > 1:
+                n_tr -= 1
+            else:
+                n_va = max(1, n_va - 1)
+
+        return (
+            [cluster_list[i] for i in indices[:n_tr]],
+            [cluster_list[i] for i in indices[n_tr:n_tr + n_va]],
+            [cluster_list[i] for i in indices[n_tr + n_va:]]
+        )
+
+    def _split_clusters_two_way(
+        cluster_list: List,
+        seed_val: int
+    ) -> Tuple[List, List, List]:
+        """Splits exactly 2 clusters into Train and Test (1 each), leaving Val empty for this class."""
+        assert len(cluster_list) == 2, f"Requires exactly 2 clusters, got {len(cluster_list)}"
+        rng = np.random.default_rng(seed_val)
+        indices = np.arange(2)
+        rng.shuffle(indices)
+        return [cluster_list[indices[0]]], [], [cluster_list[indices[1]]]
+
+    if C > 0 and X > 0:
+        if C >= 3 and X >= 3:
+            tr_clean, val_clean, test_clean = _split_clusters_three_way(clean_clusters, train_ratio, val_ratio, seed)
+            tr_cheat, val_cheat, test_cheat = _split_clusters_three_way(cheat_clusters, train_ratio, val_ratio, seed + 1)
+        elif C >= 3 and X == 2:
+            tr_clean, val_clean, test_clean = _split_clusters_three_way(clean_clusters, train_ratio, val_ratio, seed)
+            tr_cheat, val_cheat, test_cheat = _split_clusters_two_way(cheat_clusters, seed + 1)
+            logging.info(
+                "Cheater class has exactly 2 connected components: allocated 1 to Train and 1 to Test. "
+                "Validation split populated with clean samples for FPR threshold calibration."
+            )
+        elif C == 2 and X >= 3:
+            tr_clean, val_clean, test_clean = _split_clusters_two_way(clean_clusters, seed)
+            tr_cheat, val_cheat, test_cheat = _split_clusters_three_way(cheat_clusters, train_ratio, val_ratio, seed + 1)
+            logging.info(
+                "Clean class has exactly 2 connected components: allocated 1 to Train and 1 to Test. "
+                "Validation split populated with cheater samples."
+            )
+        elif C >= 3 and X == 1:
+            tr_clean, val_clean, test_clean = _split_clusters_three_way(clean_clusters, train_ratio, val_ratio, seed)
+            tr_cheat, val_cheat, test_cheat = [cheat_clusters[0]], [], []
+            logging.warning(
+                "Cheater class has only 1 connected cluster; allocated to Train. "
+                "Test partition will lack cheater samples. Held-out binary classification metrics require >= 2 cheater clusters."
+            )
+        elif C == 1 and X >= 3:
+            tr_clean, val_clean, test_clean = [clean_clusters[0]], [], []
+            tr_cheat, val_cheat, test_cheat = _split_clusters_three_way(cheat_clusters, train_ratio, val_ratio, seed + 1)
+            logging.warning(
+                "Clean class has only 1 connected cluster; allocated to Train. "
+                "Test partition will lack clean samples."
+            )
         else:
-            # n == 1: Under strict zero-leakage constraints, a single connected cluster cannot be split
-            return [group_list[0]], [], []
+            raise ValueError(f"Infeasible cluster counts: clean={C}, cheater={X}.")
 
-    # Stratified cluster partitioning across classes
-    # Whenever both clean and cheater clusters exist, ALWAYS stratify each class independently
-    # to guarantee representation of both classes in train and held-out test partitions when >= 2 clusters exist.
-    if len(clean_clusters) > 0 and len(cheat_clusters) > 0:
-        tr_clean, val_clean, test_clean = _split_cluster_group(clean_clusters, train_ratio, val_ratio, seed)
-        tr_cheat, val_cheat, test_cheat = _split_cluster_group(cheat_clusters, train_ratio, val_ratio, seed + 1)
-        
-        if len(cheat_clusters) == 1:
-            logging.warning(
-                "Cheater class has only 1 connected cluster in dataset; under strict zero-leakage constraints, "
-                "this cluster is allocated to Train, leaving Test without cheater samples. "
-                "Held-out binary classification metrics (AUROC/AUPRC) require at least 2 cheater clusters."
-            )
-        if len(clean_clusters) == 1:
-            logging.warning(
-                "Clean class has only 1 connected cluster in dataset; under strict zero-leakage constraints, "
-                "this cluster is allocated to Train, leaving Test without clean samples."
-            )
-            
         train_clusters = tr_clean + tr_cheat
         val_clusters = val_clean + val_cheat
         test_clusters = test_clean + test_cheat
-        
-        # If val is empty but we have surplus clean clusters in train, allocate one to val if possible
-        if len(val_clusters) == 0 and len(train_clusters) >= 3:
-            clean_in_train = [c for c in tr_clean]
-            if len(clean_in_train) >= 2:
-                moved = clean_in_train.pop()
-                tr_clean = clean_in_train
-                val_clusters = [moved]
-                train_clusters = tr_clean + tr_cheat
-
-        train_matches = set().union(*[c[0] for c in train_clusters])
-        val_matches = set().union(*[c[0] for c in val_clusters]) if val_clusters else set()
-        test_matches = set().union(*[c[0] for c in test_clusters])
-        
-        train_files = df_meta[df_meta['match_id'].isin(train_matches)]['fpath'].tolist()
-        val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
-        test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
-    elif len(clusters) >= 3:
-        # All clusters belong to a single class (pure clean or pure cheater)
-        rng = np.random.default_rng(seed)
-        cluster_indices = np.arange(len(clusters))
-        rng.shuffle(cluster_indices)
-        n_c = len(clusters)
-        n_train = max(1, int(n_c * train_ratio))
-        n_val = max(1, int(n_c * val_ratio))
-        if n_train + n_val >= n_c:
-            n_train = max(1, n_c - 2)
-            n_val = 1
-            
-        train_clusters = [clusters[i] for i in cluster_indices[:n_train]]
-        val_clusters = [clusters[i] for i in cluster_indices[n_train:n_train + n_val]]
-        test_clusters = [clusters[i] for i in cluster_indices[n_train + n_val:]]
-        
-        train_matches = set().union(*[c[0] for c in train_clusters])
-        val_matches = set().union(*[c[0] for c in val_clusters])
-        test_matches = set().union(*[c[0] for c in test_clusters])
-        
-        train_files = df_meta[df_meta['match_id'].isin(train_matches)]['fpath'].tolist()
-        val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
-        test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
     else:
-        # Fallback for datasets where graph connectivity creates fewer than 3 disjoint components:
-        # Search match allocations that produce non-empty partitions while strictly enforcing:
-        # M_train ∩ M_test = ∅ AND P_train ∩ P_test = ∅
-        unique_matches = np.array(sorted(df_meta['match_id'].unique()))
-        n_m = len(unique_matches)
-        if n_m < 3:
-            raise ValueError(
-                f"Strict joint zero-leakage partitioning requires at least 3 distinct matches, "
-                f"but found only {n_m}. Cannot create disjoint Train, Val, and Test partitions."
-            )
-            
-        found_split = False
-        for attempt in range(100):
-            rng.shuffle(unique_matches)
-            n_train = max(1, int(n_m * train_ratio))
-            n_val = max(1, int(n_m * val_ratio))
-            if n_train + n_val >= n_m:
-                n_train = max(1, n_m - 2)
-                n_val = 1
-                
-            train_m_set = set(unique_matches[:n_train])
-            val_m_set = set(unique_matches[n_train:n_train + n_val])
-            test_m_set = set(unique_matches[n_train + n_val:])
-            
-            # Enforce zero-leakage player filtering across match partitions
-            train_df = df_meta[df_meta['match_id'].isin(train_m_set)]
-            train_p = set(train_df['steamid'].unique())
-            
-            val_df = df_meta[df_meta['match_id'].isin(val_m_set) & (~df_meta['steamid'].isin(train_p))]
-            val_p = set(val_df['steamid'].unique())
-            
-            test_df = df_meta[df_meta['match_id'].isin(test_m_set) & (~df_meta['steamid'].isin(train_p | val_p))]
-            
-            if len(val_df) > 0 and len(test_df) > 0:
-                train_files = train_df['fpath'].tolist()
-                val_files = val_df['fpath'].tolist()
-                test_files = test_df['fpath'].tolist()
-                found_split = True
-                break
-                
-        if not found_split:
-            raise ValueError(
-                "Strict joint zero-leakage partitioning constraint violated: "
-                "M_train ∩ M_test = ∅ AND P_train ∩ P_test = ∅. "
-                "The match-player connectivity graph is too densely connected across the current matches "
-                "to yield disjoint non-empty partitions. Additional independent matches are required."
-            )
+        # Single-class dataset
+        train_clusters, val_clusters, test_clusters = _split_clusters_three_way(
+            clusters, train_ratio, val_ratio, seed
+        )
+
+    train_matches = set().union(*[c[0] for c in train_clusters])
+    val_matches = set().union(*[c[0] for c in val_clusters])
+    test_matches = set().union(*[c[0] for c in test_clusters])
+
+    train_players = set().union(*[c[1] for c in train_clusters])
+    val_players = set().union(*[c[1] for c in val_clusters])
+    test_players = set().union(*[c[1] for c in test_clusters])
+
+    # Strict Zero-Data-Leakage Verification
+    assert train_matches.isdisjoint(val_matches), "Data leakage: Train and Val share Match IDs!"
+    assert train_matches.isdisjoint(test_matches), "Data leakage: Train and Test share Match IDs!"
+    assert val_matches.isdisjoint(test_matches), "Data leakage: Val and Test share Match IDs!"
+    assert train_players.isdisjoint(val_players), "Data leakage: Train and Val share Player IDs!"
+    assert train_players.isdisjoint(test_players), "Data leakage: Train and Test share Player IDs!"
+    assert val_players.isdisjoint(test_players), "Data leakage: Val and Test share Player IDs!"
+
+    train_files = df_meta[df_meta['match_id'].isin(train_matches)]['fpath'].tolist()
+    val_files = df_meta[df_meta['match_id'].isin(val_matches)]['fpath'].tolist()
+    test_files = df_meta[df_meta['match_id'].isin(test_matches)]['fpath'].tolist()
+
+    if len(train_files) == 0 or len(val_files) == 0 or len(test_files) == 0:
+        raise ValueError(
+            f"Zero-leakage partitioning yielded an empty split: "
+            f"train={len(train_files)}, val={len(val_files)}, test={len(test_files)}. "
+            f"Component counts: clean={C}, cheater={X}."
+        )
+
+    # Report actual split sizes and cluster allocations (approximate targets: 80/10/10)
+    total_files = len(files)
+    logging.info(
+        f"Zero-leakage dataset partition summary (nominal targets: {train_ratio:.0%}/{val_ratio:.0%}/{test_ratio:.0%}):\n"
+        f"  Train: {len(train_files)} files ({len(train_files)/total_files:.1%}), "
+        f"{len(train_clusters)} clusters ({len(train_clusters)/total_clusters:.1%}), "
+        f"{len(train_matches)} matches, {len(train_players)} players\n"
+        f"  Val:   {len(val_files)} files ({len(val_files)/total_files:.1%}), "
+        f"{len(val_clusters)} clusters ({len(val_clusters)/total_clusters:.1%}), "
+        f"{len(val_matches)} matches, {len(val_players)} players\n"
+        f"  Test:  {len(test_files)} files ({len(test_files)/total_files:.1%}), "
+        f"{len(test_clusters)} clusters ({len(test_clusters)/total_clusters:.1%}), "
+        f"{len(test_matches)} matches, {len(test_players)} players"
+    )
 
     return train_files, val_files, test_files
 

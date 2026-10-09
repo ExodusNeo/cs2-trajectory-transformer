@@ -257,3 +257,179 @@ def test_stratified_cluster_partitioning_minority_cheaters(tmp_path):
     assert tr_p.isdisjoint(te_p), "Player leakage between train and test!"
     assert tr_m.isdisjoint(va_m), "Match leakage between train and val!"
     assert va_m.isdisjoint(te_m), "Match leakage between val and test!"
+
+
+def _create_synthetic_parquet(tmp_path, match_id: str, player_id: int, is_aimbot: int):
+    """Helper to write a valid synthetic Parquet ATW file."""
+    df = pd.DataFrame({
+        'yaw': [0.0] * 32,
+        'pitch': [0.0] * 32,
+        'angular_velocity': [0.0] * 32,
+        'angular_accel': [0.0] * 32,
+        'angular_jerk': [0.0] * 32,
+        'trajectory_curvature': [0.0] * 32,
+        'curvature_entropy': [0.0] * 32,
+        'tremor_power_8_12hz': [0.0] * 32,
+        'match_id': match_id,
+        'steamid': player_id,
+        'segment_id': 0,
+        'is_aimbot': is_aimbot,
+        'player_elo': 1500.0 if is_aimbot == 0 else 2400.0
+    })
+    fpath = tmp_path / f"{match_id}_p{player_id}_seg0.parquet"
+    df.to_parquet(str(fpath), index=False)
+    return fpath
+
+
+def test_partition_dataset_files_two_and_two_infeasible_raises_value_error(tmp_path):
+    """
+    Verify that exactly 2 clean and 2 cheater components (C=2, X=2, total=4) raises a
+    descriptive ValueError explaining that populating Train and Test with both classes
+    leaves Validation empty under strict zero-leakage constraints.
+    """
+    from data.dataset import partition_dataset_files
+    
+    # 2 clean matches, 2 cheater matches (4 disjoint clusters)
+    _create_synthetic_parquet(tmp_path, "match_c0", 101, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_c1", 102, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_x0", 201, is_aimbot=1)
+    _create_synthetic_parquet(tmp_path, "match_x1", 202, is_aimbot=1)
+    
+    with pytest.raises(ValueError) as exc_info:
+        partition_dataset_files(str(tmp_path), train_ratio=0.80, val_ratio=0.10, test_ratio=0.10, seed=42)
+        
+    err_msg = str(exc_info.value)
+    assert "2 clean" in err_msg or "clean=2" in err_msg
+    assert "2 cheater" in err_msg or "cheater=2" in err_msg
+    assert "Validation empty" in err_msg
+
+
+def test_partition_dataset_files_three_clean_two_cheaters_succeeds(tmp_path):
+    """
+    Verify that 3 clean and 2 cheater components (C=3, X=2, total=5) succeeds without
+    leaving Validation empty: Train has both classes, Test has both classes, and
+    Validation has clean samples.
+    """
+    from data.dataset import partition_dataset_files
+    
+    # 3 clean matches, 2 cheater matches (5 disjoint clusters)
+    _create_synthetic_parquet(tmp_path, "match_c0", 101, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_c1", 102, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_c2", 103, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_x0", 201, is_aimbot=1)
+    _create_synthetic_parquet(tmp_path, "match_x1", 202, is_aimbot=1)
+    
+    train_files, val_files, test_files = partition_dataset_files(
+        str(tmp_path), train_ratio=0.80, val_ratio=0.10, test_ratio=0.10, seed=42
+    )
+    
+    # All splits must be non-empty
+    assert len(train_files) > 0, "Train split is empty!"
+    assert len(val_files) > 0, "Validation split is empty!"
+    assert len(test_files) > 0, "Test split is empty!"
+    
+    # Train must have both classes
+    train_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in train_files]
+    assert 0 in train_labels and 1 in train_labels, "Train missing one class!"
+    
+    # Test must have both classes
+    test_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in test_files]
+    assert 0 in test_labels and 1 in test_labels, "Test missing one class!"
+    
+    # Validation must have clean samples (non-empty)
+    val_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in val_files]
+    assert 0 in val_labels, "Validation missing clean samples!"
+    
+    # Strict zero-leakage checks
+    def get_meta(files):
+        ms, ps = set(), set()
+        for f in files:
+            df = pd.read_parquet(f)
+            ms.update(df['match_id'].unique())
+            ps.update(df['steamid'].unique())
+        return ms, ps
+        
+    tr_m, tr_p = get_meta(train_files)
+    va_m, va_p = get_meta(val_files)
+    te_m, te_p = get_meta(test_files)
+    
+    assert tr_m.isdisjoint(va_m) and tr_m.isdisjoint(te_m) and va_m.isdisjoint(te_m)
+    assert tr_p.isdisjoint(va_p) and tr_p.isdisjoint(te_p) and va_p.isdisjoint(te_p)
+
+
+def test_partition_dataset_files_two_clean_three_cheaters_succeeds(tmp_path):
+    """
+    Verify that 2 clean and 3 cheater components (C=2, X=3, total=5) succeeds:
+    Train and Test have both classes, and Validation has cheater samples.
+    """
+    from data.dataset import partition_dataset_files
+    
+    # 2 clean matches, 3 cheater matches (5 disjoint clusters)
+    _create_synthetic_parquet(tmp_path, "match_c0", 101, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_c1", 102, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_x0", 201, is_aimbot=1)
+    _create_synthetic_parquet(tmp_path, "match_x1", 202, is_aimbot=1)
+    _create_synthetic_parquet(tmp_path, "match_x2", 203, is_aimbot=1)
+    
+    train_files, val_files, test_files = partition_dataset_files(
+        str(tmp_path), train_ratio=0.80, val_ratio=0.10, test_ratio=0.10, seed=42
+    )
+    
+    assert len(train_files) > 0 and len(val_files) > 0 and len(test_files) > 0
+    train_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in train_files]
+    test_labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in test_files]
+    assert 0 in train_labels and 1 in train_labels
+    assert 0 in test_labels and 1 in test_labels
+
+
+def test_partition_dataset_files_three_clean_three_cheaters_both_in_val(tmp_path):
+    """
+    Verify that 3 clean and 3 cheater components (C=3, X=3, total=6) guarantees
+    that Train, Test, AND Validation each contain both clean and cheater samples.
+    """
+    from data.dataset import partition_dataset_files
+    
+    for i in range(3):
+        _create_synthetic_parquet(tmp_path, f"match_c{i}", 100 + i, is_aimbot=0)
+        _create_synthetic_parquet(tmp_path, f"match_x{i}", 200 + i, is_aimbot=1)
+        
+    train_files, val_files, test_files = partition_dataset_files(
+        str(tmp_path), train_ratio=0.34, val_ratio=0.33, test_ratio=0.33, seed=42
+    )
+    
+    for split_name, f_list in [("Train", train_files), ("Val", val_files), ("Test", test_files)]:
+        assert len(f_list) > 0, f"{split_name} split is empty!"
+        labels = [pd.read_parquet(f)['is_aimbot'].iloc[0] for f in f_list]
+        assert 0 in labels, f"{split_name} missing clean class!"
+        assert 1 in labels, f"{split_name} missing cheater class!"
+
+
+def test_partition_dataset_files_insufficient_single_class_raises_value_error(tmp_path):
+    """Verify that fewer than 3 single-class components raises a descriptive ValueError."""
+    from data.dataset import partition_dataset_files
+    
+    _create_synthetic_parquet(tmp_path, "match_c0", 101, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_c1", 102, is_aimbot=0)
+    
+    with pytest.raises(ValueError) as exc_info:
+        partition_dataset_files(str(tmp_path), seed=42)
+        
+    assert "at least 3 connected components" in str(exc_info.value)
+    assert "clean=2" in str(exc_info.value)
+    assert "cheater=0" in str(exc_info.value)
+
+
+def test_partition_dataset_files_one_clean_two_cheaters_raises_value_error(tmp_path):
+    """Verify that C=1, X=2 (total 3) raises a descriptive ValueError."""
+    from data.dataset import partition_dataset_files
+    
+    _create_synthetic_parquet(tmp_path, "match_c0", 101, is_aimbot=0)
+    _create_synthetic_parquet(tmp_path, "match_x0", 201, is_aimbot=1)
+    _create_synthetic_parquet(tmp_path, "match_x1", 202, is_aimbot=1)
+    
+    with pytest.raises(ValueError) as exc_info:
+        partition_dataset_files(str(tmp_path), seed=42)
+        
+    assert "clean=1" in str(exc_info.value)
+    assert "cheater=2" in str(exc_info.value)
+
