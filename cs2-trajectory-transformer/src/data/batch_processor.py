@@ -146,6 +146,33 @@ def extract_player_feature_windows(
 
 
 
+def write_feature_windows(
+    featured_segments: List[pd.DataFrame],
+    output_dir: str,
+    anon_match_id: str,
+    anon_steamid: int,
+    label: int,
+    elo: Optional[float],
+    extra: Optional[Dict[str, Union[str, float]]] = None
+) -> int:
+    """
+    Writes one Parquet file per featured ATW with the shared metadata schema
+    (match_id, steamid, segment_id, is_aimbot, player_elo, plus `extra` columns such as source).
+    Identifiers must already be pseudonymized (RA 10173). Returns the number of files written.
+    """
+    for seg_idx, featured_df in enumerate(featured_segments):
+        featured_df['match_id'] = anon_match_id
+        featured_df['steamid'] = anon_steamid
+        featured_df['segment_id'] = seg_idx
+        featured_df['is_aimbot'] = int(label)
+        featured_df['player_elo'] = float(elo) if elo is not None else np.nan
+        for col, val in (extra or {}).items():
+            featured_df[col] = val
+        out_filename = f"{anon_match_id}_p{anon_steamid}_seg{seg_idx}.parquet"
+        featured_df.to_parquet(os.path.join(output_dir, out_filename), index=False)
+    return len(featured_segments)
+
+
 def process_single_demo(
     demo_path: str, 
     output_dir: str, 
@@ -260,18 +287,10 @@ def process_single_demo(
             
             anon_steamid = pseudonymize_steamid(steamid, salt=salt)
             anon_match_id = pseudonymize_match_id(match_name, salt=salt) if pseudonymize_matches else match_name
-            for seg_idx, featured_df in enumerate(featured_segments):
-                # Metadata tags (RA 10173 Cryptographically Pseudonymized)
-                featured_df['match_id'] = anon_match_id
-                featured_df['steamid'] = anon_steamid
-                featured_df['segment_id'] = seg_idx
-                featured_df['is_aimbot'] = is_player_cheater
-                featured_df['player_elo'] = float(p_elo) if p_elo is not None else np.nan
-                
-                # Export to Parquet
-                out_filename = f"{anon_match_id}_p{anon_steamid}_seg{seg_idx}.parquet"
-                featured_df.to_parquet(os.path.join(output_dir, out_filename), index=False)
-                total_segments += 1
+            total_segments += write_feature_windows(
+                featured_segments, output_dir, anon_match_id, anon_steamid,
+                label=is_player_cheater, elo=p_elo, extra={'source': 'dem'}
+            )
 
                 
         logging.info(f"Processed {match_name}: {total_segments} ATW segments extracted.")

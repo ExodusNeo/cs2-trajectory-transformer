@@ -101,7 +101,11 @@ python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_pla
 # 3. Automated Match Spider (Auto-scan lobbies for active cheaters):
 python crawl_replays.py --scan_cheaters --count 5
 
-# 4. Train ST-Trans Dual-Head Model:
+# 4. CS2CD benchmark (Parquet + JSON from Hugging Face; separate feature store, source='cs2cd'):
+python ingest_cs2cd.py --download_per_folder 40 --seed 0   # pilot subset; omit --download_per_folder to process what is on disk
+python pilot_study.py                                      # session-level grouped-CV feasibility study -> reports/pilot_cs2cd/
+
+# 5. Train ST-Trans Dual-Head Model:
 python train.py --data_dir data/processed_parquet --epochs 50 --batch_size 32 --samples_per_player 4
 ```
 

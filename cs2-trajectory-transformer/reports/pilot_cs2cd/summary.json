@@ -1,0 +1,74 @@
+{
+  "matches": 80,
+  "sessions": 563,
+  "positive_sessions": 163,
+  "negative_sessions": 400,
+  "windows": 64014,
+  "white_noise_tbp": 0.159,
+  "by_class": {
+    "0": {
+      "windows": 47224,
+      "tbp_median": 0.0306,
+      "aim_error_median_deg": 12.5938
+    },
+    "1": {
+      "windows": 16790,
+      "tbp_median": 0.0281,
+      "aim_error_median_deg": 10.7328
+    }
+  },
+  "input_consistency_median_by_class": {
+    "0": {
+      "input_corr": -0.9355,
+      "input_unexplained_frac": 0.0214,
+      "input_resid_med": 0.1099
+    },
+    "1": {
+      "input_corr": -0.9215,
+      "input_unexplained_frac": 0.0289,
+      "input_resid_med": 0.1229
+    }
+  },
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "labeled_cheaters_per_cheater_match_median": 4.0,
+  "maps_by_class": {
+    "0": {
+      "cs_italy": 30,
+      "cs_office": 10,
+      "de_ancient": 20,
+      "de_anubis": 20,
+      "de_basalt": 20,
+      "de_dust2": 50,
+      "de_edin": 30,
+      "de_inferno": 60,
+      "de_mirage": 10,
+      "de_nuke": 30,
+      "de_overpass": 30,
+      "de_thera": 10,
+      "de_train": 40,
+      "de_vertigo": 40
+    },
+    "1": {
+      "cs_italy": 5,
+      "cs_office": 13,
+      "de_ancient": 9,
+      "de_anubis": 0,
+      "de_basalt": 5,
+      "de_dust2": 52,
+      "de_edin": 0,
+      "de_inferno": 20,
+      "de_mirage": 21,
+      "de_nuke": 25,
+      "de_overpass": 4,
+      "de_thera": 0,
+      "de_train": 0,
+      "de_vertigo": 9
+    }
+  }
+}

@@ -51,6 +51,8 @@ cs2-trajectory-transformer/
 ├── inspect_checkpoint.py                   <- Weight inspection utility for saved PyTorch checkpoints
 ├── probe_replay_signal.py                  <- Empirical probe: mouse-count quantization & tremor-band signal vs white noise
 ├── ablation.py                             <- Feature ablation (central RQ: engineered vs raw-angle inputs)
+├── ingest_cs2cd.py                         <- CS2CD download (verified, resumable) + ATW extraction to data/processed_parquet_cs2cd
+├── pilot_study.py                          <- CS2CD session-level grouped-CV pilot (feature groups + mouse-input consistency)
 ├── visualize.py                            <- Publication-ready ROC/PR curves & t-SNE latent cluster visualizer
 │
 ├── src/                                    <- Core Python package source modules
@@ -65,16 +67,18 @@ cs2-trajectory-transformer/
 │       ├── atw_filter.py                   <- Active Tracking Window (ATW) spatial-temporal extractor
 │       ├── dataset.py                      <- Zero-leakage partitioning (components / match_drop), P×K sampler, collator
 │       ├── demo_downloader.py              <- FACEIT API polite scraper & archive decompressor
-│       └── batch_processor.py              <- extract_player_feature_windows (shared by ingestion & analyze_match) + Parquet export
+│       ├── batch_processor.py              <- extract_player_feature_windows (shared by ingestion & analyze_match) + Parquet export
+│       └── cs2cd_adapter.py                <- CS2CD Parquet+JSON loader, label policy, verified downloader
 │
-├── tests/                                  <- Pytest suite (71/71 passing on 2026-10-10)
+├── tests/                                  <- Pytest suite (77/77 passing on 2026-10-11)
 │   ├── test_kinematics.py                  <- Euler wrapping, curvature, & tremor PSD unit tests
 │   ├── test_model.py                       <- ST-Trans forward pass, masks, & loss function tests
 │   ├── test_dataset.py                     <- Zero data leakage splits & batch collation tests
 │   ├── test_parser.py                      <- ATW geometry & demoparser2 integration tests
 │   ├── test_downloader.py                  <- Download, decompression, & rate limit backoff tests
 │   ├── test_baselines.py                   <- Baseline model architectures & inference tests
-│   └── test_feature_contract_and_splits.py <- Feature contract, TBP, aim error, halftime swap, P×K, match_drop, ELO mask
+│   ├── test_feature_contract_and_splits.py <- Feature contract, TBP, aim error, halftime swap, P×K, match_drop, ELO mask
+│   └── test_cs2cd_adapter.py               <- CS2CD loading, label policy, namespacing, file validation, resumability
 │
 ├── data/                                   <- Local and external data directories
 │   ├── raw_demos/                          <- Downloaded .dem replays (clean/ & cheaters/)
@@ -222,7 +226,7 @@ The following table documents the audited alignment between the approved thesis 
 | **40** | **Giant-Component Partitioning** | Sec 3.2.7 assumes hundreds of independent components. | Size-aware allocation (largest component → train); `strategy="auto"` falls back to leakage-free `match_drop`. | 🟢 **Resolved (2026-10-11):** Sec 3.2.7 describes size-aware allocation and the match-level fallback. |
 | **41** | **Weak Labels, Masked ELO, Ban Regex** | Labels as ground truth; ELO from API. | Account-level weak labels documented; unknown ELO masked (no 1500 default); `is_cheating_ban_reason` word-boundary regex. | 🟢 **Resolved (2026-10-11):** Sec 1.4 and 3.2.2 state account-level weak labels and within-match negatives; Sec 3.2.6/3.2.9 state ELO masking. Open: confirm whether FACEIT ELO is at match time. |
 | **42** | **Synthetic Data Integrity** | Synthetic suite as stress test only. | Generator isolated to `data/synthetic_parquet`, adds quantization, moving targets and a humanized aimbot; reports tagged with provenance. Synthetic scores are never evidence. | 🟢 **Resolved (2026-10-10).** Old `reports/*.csv` are synthetic. |
-| **43** | **Promised but Unimplemented** | CS2CD integration, AntiCheatPT baseline, ONNX export, HID/Bézier synthetic suite. | Not present in code. CS2CD confirmed as Parquet + JSON (adapter needed); ONNX now described as planned in Sec 3.2.9. | 🔴 **Open:** CS2CD adapter, AntiCheatPT reproduction, ONNX export, HID/Bézier synthetic suite. |
+| **43** | **Promised but Unimplemented** | CS2CD integration, AntiCheatPT baseline, ONNX export, HID/Bézier synthetic suite. | CS2CD adapter implemented (`src/data/cs2cd_adapter.py`, `ingest_cs2cd.py`); ONNX described as planned in Sec 3.2.9. | 🔴 **Open:** AntiCheatPT reproduction, ONNX export, HID/Bézier synthetic suite, full CS2CD ingestion. |
 
 ---
 

@@ -24,18 +24,20 @@ When they disagree, trust in this order: **code + tests → THESIS_TRACKER.md �
 4. Read the "Project state" below and the tracker phase table before proposing work.
 
 ### Project state (2026-10-10; update this block when it changes)
-- **Real data:** one FACEIT demo (`data/raw_demos/clean/1-1cfcda8f-…dem`). No cheater demos. No CS2CD adapter yet
-  (CS2CD ships as Parquet tables + JSON metadata, so it bypasses `.dem` parsing and needs a schema-mapping adapter).
-- **Every reported metric so far is synthetic** (`reports/*.csv`, old ablation, old benchmark). Synthetic
-  scores verify the pipeline runs; they are **not evidence** for any hypothesis.
+- **Real data:** one FACEIT demo (`data/raw_demos/clean/1-1cfcda8f-…dem`); CS2CD pilot subset (40 + 40 matches, seed 0)
+  in `data/raw_demos/cs2cd/` → `data/processed_parquet_cs2cd/` (64,014 ATWs). Full CS2CD (795) not yet ingested.
+- **Real evidence so far = the CS2CD tabular pilot** (`reports/pilot_cs2cd/`, 80 matches, 563 sessions):
+  session AUROC 0.817 [0.749, 0.876]; +0.070 over raw angles and +0.043 from target-relative channels (both CIs > 0);
+  confounds map/rank ≈ 0.63; TPR at 1% FPR ≈ 0.02; mouse-input consistency adds nothing. Other `reports/*.csv`
+  are synthetic and **not evidence**.
 - **Feature set:** 9 channels in `features.kinematics.MODEL_FEATURE_COLUMNS`. Checkpoints trained on
   the old 8-channel set (`models/checkpoints/best_model.pt`) are incompatible: retrain.
 - **Empirical finding:** on the real demo, small view-angle steps are single mouse counts (0.022° × sens),
   >50% of live ticks show zero motion, and real-player tremor band power (median 0.023) is *below*
   white noise (0.16). Treat tremor as a weak candidate channel. Re-check with `probe_replay_signal.py`.
 - **Manuscript:** aligned with the code on 2026-10-11 (text-only edit). Still open: typed TOC/list page numbers
-  (out of sync since before that edit), smurf scope (authors' decision), CS2CD adapter (data is Parquet + JSON,
-  not `.dem`), AntiCheatPT reproduction, ONNX export.
+  (out of sync since before that edit), smurf scope (authors' decision), whether to restate Table 8 targets
+  relative to baselines (pilot 0.82 vs target 0.98), AntiCheatPT reproduction, ONNX export.
 
 ---
 
@@ -126,7 +128,16 @@ L_min = 64 ticks (one FFT window), L_max = 512 with 50%-stride chunking.
 5. Update `ablation.py` configs, `TabularMLP` default `input_dim = 6 × n_channels`, tests, the AGENTS registry, the tracker, and note the manuscript tables to change.
 6. Old checkpoints become incompatible: say so in the change log.
 
-### 3.4 ELO and identity
+### 3.4 CS2CD specifics (src/data/cs2cd_adapter.py)
+- Per match: `N.parquet` (demoparser2 ticks, 10 rows/tick, 64 Hz) + `N.json` (events, `cheaters`, `CSstats_info`).
+- `Player_k` IDs repeat across matches: always namespace as `cs2cd_<folder>_<N>:<Player_k>` before hashing.
+- Positives = listed cheaters. Negatives = players in `no_cheater_present` only (unlabeled players in cheater
+  matches have ~55.6% label precision and are skipped). No FACEIT ELO (NaN). Valve MM source: report per source,
+  never pair CS2CD positives with FACEIT negatives.
+- Both CS2CD and FACEIT demos carry `usercmd_mouse_dx/dy` (raw mouse input). Mouse-input/view consistency is a
+  session-level candidate signal for software aim assistance; hardware input emulators stay consistent.
+
+### 3.5 ELO and identity
 - Unknown ELO → `NaN` in Parquet → masked by `elo_mask` / `masked_smooth_l1_loss`. Never default to 1500.
 - FACEIT API ELO may be *current* ELO, not ELO at match time. Record the source.
 - SteamIDs and match IDs are salted-SHA-256 pseudonyms (`CS2_PSEUDONYMIZATION_SALT` required, RA 10173).
@@ -233,6 +244,10 @@ $py = "cs2-trajectory-transformer\venv\Scripts\python.exe"
 
 # Ingest real demos (requires CS2_PSEUDONYMIZATION_SALT in .env)
 & $py -c "import sys; sys.path.append('cs2-trajectory-transformer/src'); from data.batch_processor import batch_process_demos; batch_process_demos('cs2-trajectory-transformer/data/raw_demos/clean', 'cs2-trajectory-transformer/data/processed_parquet')"
+
+# CS2CD (Hugging Face Parquet + JSON) -> separate store data\processed_parquet_cs2cd, then pilot study
+& $py "cs2-trajectory-transformer\ingest_cs2cd.py" --download_per_folder 40 --seed 0
+& $py "cs2-trajectory-transformer\pilot_study.py"
 
 # Train (P x K batches for InfoNCE; auto leakage-free split)
 & $py "cs2-trajectory-transformer\train.py" --data_dir "cs2-trajectory-transformer\data\processed_parquet" --epochs 50 --samples_per_player 4

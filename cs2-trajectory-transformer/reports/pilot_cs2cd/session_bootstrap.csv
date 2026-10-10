@@ -1,0 +1,4 @@
+,AUROC_a,AUROC_a_lo,AUROC_a_hi,diff,diff_lo,diff_hi
+"All 9 vs raw angles (yaw, pitch)",0.817,0.749,0.876,0.07,0.027,0.116
+All 9 vs self-kinematics only,0.817,0.749,0.876,0.043,0.02,0.066
+All 9 vs map only (confound),0.817,0.749,0.876,0.151,0.02,0.279

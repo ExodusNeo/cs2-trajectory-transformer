@@ -73,10 +73,12 @@ def test_cluster_bootstrap_and_design_effect():
     assert n_eff2 < 7.0
 
 
-def test_audit_clean_atw_quota():
-    """Test empirical stopping condition quota auditing function on test split and overall corpus."""
+def test_audit_clean_atw_quota(tmp_path):
+    """Test empirical stopping condition quota auditing on a self-contained synthetic corpus."""
     from data.batch_processor import audit_clean_atw_quota
-    
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from generate_benchmark_dataset import create_synthetic_dataset
+
     # Audit on non-existent directory
     res_empty = audit_clean_atw_quota("non_existent_directory_xyz", target_clean=30000)
     assert res_empty['clean_count'] == 0
@@ -84,24 +86,22 @@ def test_audit_clean_atw_quota():
     assert res_empty['overall_clean_count'] == 0
     assert res_empty['quota_met'] is False
     assert res_empty['deficit'] == 30000
-    
-    # Audit on repository processed_parquet directory
-    p_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data', 'processed_parquet'))
-    if os.path.exists(p_dir):
-        # When target is 50, test split has 60 clean windows -> quota met
-        res = audit_clean_atw_quota(p_dir, target_clean=50)
-        assert res['is_test_split_audited'] is True
-        assert res['overall_clean_count'] >= 300
-        assert res['test_clean_count'] >= 50
-        assert res['clean_count'] == res['test_clean_count']
-        assert res['target_clean'] == 50
-        assert res['quota_met'] is True
-        assert res['progress_pct'] >= 100.0
-        
-        # When target is 30,000, test split has 60 clean windows -> quota not met
-        res_30k = audit_clean_atw_quota(p_dir, target_clean=30000)
-        assert res_30k['quota_met'] is False
-        assert res_30k['deficit'] == 30000 - res_30k['test_clean_count']
+
+    # 600 windows: 10 clean + 10 cheater players in 5 + 5 independent matches (300 clean windows)
+    p_dir = str(tmp_path / "corpus")
+    create_synthetic_dataset(p_dir, num_samples=600, seed=0)
+    res = audit_clean_atw_quota(p_dir, target_clean=50)
+    assert res['is_test_split_audited'] is True
+    assert res['overall_clean_count'] == 300
+    assert res['test_clean_count'] >= 50
+    assert res['clean_count'] == res['test_clean_count']
+    assert res['target_clean'] == 50
+    assert res['quota_met'] is True
+    assert res['progress_pct'] >= 100.0
+
+    res_30k = audit_clean_atw_quota(p_dir, target_clean=30000)
+    assert res_30k['quota_met'] is False
+    assert res_30k['deficit'] == 30000 - res_30k['test_clean_count']
 
 
 def test_audit_clean_atw_quota_fail_closed(tmp_path):

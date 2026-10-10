@@ -1,332 +1,258 @@
 # 🎓 CS2 Trajectory Transformer — Outline Defense Master Guide
 
-> **Thesis Title:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers  
-> **Authors:** Judah Ben Hur L. Medel & Dishann G. Gutierrez  
-> **Adviser:** Vera Kim S. Tequin  
-> **Panel Review:** College of Information and Computing (CIC), University of Southeastern Philippines (USeP)  
-> **Degree Program:** Bachelor of Science in Computer Science (Major in Data Science)  
-> **Target Outline Defense Date:** November 2026  
+> **Thesis Title:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers
+> **Authors:** Judah Ben Hur L. Medel & Dishann G. Gutierrez · **Adviser:** Vera Kim S. Tequin
+> **Panel:** College of Information and Computing (CIC), University of Southeastern Philippines (USeP)
+> **Outline Defense:** November 2026 · **Rewritten:** 2026-10-11 (replaces the earlier guide, whose results were synthetic)
 
 ---
 
-## 🧭 1. Executive Summary & Defense Dynamics
+## 0. Read this first: what changed and why
 
-### 1.1 The Purpose of the Outline Defense
-In the CIC USeP BSCS Data Science curriculum, the **Outline Defense** (Proposal Examination) evaluates Chapters 1, 2, and 3. The panel's primary objective is to verify:
-1. **Problem Soundness:** Is the problem real, significant, and unsolved by current commercial and academic systems?
-2. **Theoretical & Mathematical Rigor:** Are the data science techniques (Biomechanical kinematics, Transformer Self-Attention, Supervised InfoNCE Contrastive Loss, Binary Focal Loss) mathematically sound and justified over naive alternatives?
-3. **Methodological Feasibility & Data Integrity:** Is the data collection pipeline valid, reproducible, free of data leakage, and representative of competitive conditions?
-4. **Preliminary Viability:** Does early empirical evidence demonstrate that the proposed architecture works as claimed?
+The previous guide claimed results we do not have: 128-tick data, "15–45% tremor in humans", "< 0.1% FPR achieved",
+an ablation "proving" invariants, and a line-of-sight check. Each would be easy to catch: the replays run at 64 Hz,
+the ablation ran on synthetic data built to separate, and there is no occlusion check. **Do not reuse any of it.**
 
-### 1.2 Defense Format & Time Allocation
-- **Presentation Duration:** 15 – 20 minutes (strictly enforced; ~1 minute per slide).
-- **Panel Q&A / Deliberation:** 20 – 30 minutes.
-- **Presenter Division:**
-  - **Speaker 1 (Dishann G. Gutierrez):** Introduction, Research Problem, Objectives, Conceptual Framework, Biomechanical Invariants (Chapters 1 & 2).
-  - **Speaker 2 (Judah Ben Hur L. Medel):** Methodology, ST-Trans Architecture, Multi-Task Loss, Zero-Leakage Dataset, Preliminary Results, and Live Terminal Demo (Chapter 3 & Progress).
+The defense is now built on three things a panel respects:
+1. **A falsifiable central question:** do physics-informed and target-relative features improve *leakage-free*
+   cheat detection over a model fed raw view angles?
+2. **Measured facts about the data,** including inconvenient ones (tremor is barely visible in replays).
+3. **A real-data pilot on CS2CD** (Section 5), honestly scoped as feasibility evidence, not the final result.
 
----
-
-## 📊 2. The 18-Slide Presentation Deck Blueprint
-
-```
-Slide 01: Title & Authorship
-Slide 02: Research Motivation — The Collapse of Ring-0 Anti-Cheats
-Slide 03: The Smurfing Crisis & Matchmaking Degradation
-Slide 04: Research Questions & Objectives (General & Specific)
-Slide 05: Conceptual Framework (Input - Process - Output / IPO)
-Slide 06: Scope, Delimitations & Ethical Considerations
-Slide 07: Theoretical Foundations — Biomechanical Invariants
-Slide 08: 8–12 Hz Physiological Hand Tremor & Minimum Jerk
-Slide 09: System Architecture — End-to-End Pipeline
-Slide 10: Replay Parsing & Active Tracking Window (ATW) Extraction
-Slide 11: 8D Kinematic Feature Extraction Engine
-Slide 12: Spatial-Temporal Trajectory Transformer (ST-Trans) Model
-Slide 13: Multi-Task Optimization (Binary Focal Loss + Supervised InfoNCE)
-Slide 14: Dataset Ingestion & Zero-Data-Leakage Partitioning
-Slide 15: Preliminary Benchmark Results vs. Baselines (Table 7)
-Slide 16: Feature Ablation Study & Invariant Validation (Task 4.2)
-Slide 17: Live Pipeline Demonstration (`demo_sample.py` & `analyze_match.py`)
-Slide 18: Summary, Defense Timeline & Conclusion
-```
+An outline defense examines whether the *plan* is sound. Showing that you have already found and fixed the
+weak points is the strongest position you can be in.
 
 ---
 
-### Slide 1: Title & Authorship
-- **Header:** Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers
-- **Sub-header:** BSCS Data Science Outline Defense | College of Information and Computing | University of Southeastern Philippines
-- **Presenters:** Judah Ben Hur L. Medel & Dishann G. Gutierrez
-- **Adviser:** Vera Kim S. Tequin
-- **Speaker Script:**  
-  > *"Good morning, esteemed members of the panel, our adviser Prof. Vera Kim Tequin, and guests. Today, we are presenting our thesis research proposal titled: 'Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers'. I am Dishann Gutierrez, presenting alongside my co-author Judah Ben Hur Medel."*
+## 1. The one-paragraph pitch (memorize)
+
+> Kernel anti-cheats cannot see cheats that run on separate hardware, and aggregate statistics are easy to
+> game. Every aim-assist, however it is delivered, must eventually move the crosshair, and the game server
+> records that movement 64 times per second. We extract combat windows from CS2 replays, describe them with
+> nine candidate channels (motion smoothness, curvature, a tremor-band measure and, crucially, the crosshair's
+> angle to the nearest enemy), and test with leakage-free splits whether these channels beat a raw-angle model.
+> A pilot on 80 real CS2CD matches already shows that our engineered channels separate cheaters from clean
+> players at the player-match level (AUROC 0.82) and beat a raw-angle model by +0.07 AUROC, with a 95% interval
+> that excludes zero. It also shows what is still hard: catching cheaters at very low false-positive rates.
 
 ---
 
-### Slide 2: Research Motivation — The Failure of Ring-0 Anti-Cheats
-- **Visual:** Split diagram comparing Client-Side Ring-0 Driver vs. DMA Hardware / External USB HID Arduino smoother vs. Server-side Telemetry.
-- **Key Points:**
-  - Modern cheats bypass client memory using PCIe Direct Memory Access (DMA) cards and microcontroller-based hardware smoothers.
-  - Client-side kernel drivers (e.g., Vanguard, EAC) suffer from fundamental architectural blindness: cheat computation occurs on a secondary machine.
-  - Kernel drivers create severe security and privacy liabilities (BSODs, rootkit vulnerabilities).
-- **Speaker Script:**  
-  > *"Anti-cheat systems in competitive esports face a fundamental crisis. For years, the industry relied on intrusive kernel-level Ring-0 drivers. However, modern cheating has migrated into hardware: Direct Memory Access (DMA) PCIe cards and external Arduino mouse smoothers intercept and manipulate input entirely outside the host operating system. A kernel driver cannot detect memory manipulation happening on a secondary computer. Consequently, anti-cheat detection must move to the only unalterable ground truth: the authoritative game server's view-angle telemetry."*
+## 2. Format & speaker split
+
+- **Presentation:** 15–18 minutes (~1 minute per slide). **Q&A:** 20–30 minutes.
+- **Dishann:** problem, related work, theory-as-hypotheses, research questions (Slides 1–8).
+- **Judah:** data, pipeline, model, evaluation, pilot, threats, timeline (Slides 9–18).
+- Both: Q&A. Whoever owns the slide answers first; the other adds only if something is missing.
 
 ---
 
-### Slide 3: The Smurfing Crisis & Skill Discrepancy
-- **Visual:** Matchmaking bell curve showing rank deflation and player churn; skill tier mismatch.
-- **Key Points:**
-  - Smurfing (high-skill players competing on low-rank alternate accounts) ruins competitive matchmaking integrity.
-  - Conventional server heuristics (K/D ratio, headshot %) are coarse, reactive, and easily manipulated by deliberate throwing.
-  - Existing systems lack continuous biometric skill profiling capable of evaluating motor proficiency directly from player execution.
-- **Speaker Script:**  
-  > *"Concurrently, smurfing severely degrades competitive matchmaking. Conventional systems rely on aggregate post-match metrics like win rate or K/D ratio, which take dozens of ruined games to identify a smurf. A player can artificially suppress their K/D ratio while retaining elite motor skill. What esports engines lack is a continuous, fine-grained motor biometric profiler capable of quantifying intrinsic skill from micro-trajectory dynamics alone."*
+## 3. Slide blueprint (18 slides)
+
+| # | Slide | Key content | Avoid |
+| :-: | :--- | :--- | :--- |
+| 1 | Title | Title, authors, adviser | — |
+| 2 | Problem: client-side limits | DMA / external-HID cheats run outside the OS a kernel driver can inspect; privacy & stability costs of Ring-0 | "kernel AC is useless", "immune" |
+| 3 | Problem: server-side is hard too | Aggregate stats are gameable; GAN-Aimbots [1] and Witschel & Wressnegger [9] show humanized aimbots evade learned detectors | Implying prior work failed by being naive |
+| 4 | Smurfing (secondary aim) | Skill estimation from mechanics; evaluated by simulated rank discrepancy | Claiming solved smurf detection |
+| 5 | Research questions | RQ1 features · RQ2 ATW segmentation · RQ3 dual-head model · RQ4 vs baselines, TPR at strict FPR | — |
+| 6 | Conceptual framework | IPO: replays → ATWs → 9 channels → ST-Trans → aimbot score, embedding, ELO | "8D" |
+| 7 | Theory as hypotheses | Fitts → aim error; Flash & Hogan → jerk; tremor → TBP; curvature. Each with "what a cheat would change" | "laws", "invariants", "cannot be faked" |
+| 8 | What replays can physically show | Small steps are single mouse counts; >50% of live ticks static; real TBP 0.023 < white noise 0.16 → tremor is a weak candidate, tested not assumed | Hiding this. It is a strength. |
+| 9 | Data sources & labels | FACEIT (ban-verified, ELO) + CS2CD (795 Valve MM matches). Labels are account-level. CS2CD negatives only from no-cheater matches; per-source reporting | "ground truth" without qualification |
+| 10 | ATW extraction | 64 Hz; FOV ≤ 30°, ≤ 3500 u; ±64-tick event buffers; L_min 64, L_max 512; opponents per tick (halftime swap) | "line-of-sight check" |
+| 11 | Nine channels | Table 5: pitch, ω, α, j, κ_g, S_c, TBP, aim error, aim-error rate; absolute yaw excluded (map shortcut) | — |
+| 12 | ST-Trans | 9→128, 4 layers × 8 heads, mask-aware pooling, dual heads | — |
+| 13 | Training objective | Focal + 0.5·InfoNCE (P×K batches) + 0.2·masked Smooth-L1 ELO | — |
+| 14 | Leakage-free evaluation | Player- *and* match-disjoint splits (components, or match-level fallback); τ* on validation; TPR at FPR ≤ 0.01%; session-level primary; bounds under label noise | "0.01% FPR achieved" |
+| 15 | Pilot on CS2CD | Section 5 table: ablation at session level, grouped CV | Over-reading small-n numbers |
+| 16 | What the pilot does *not* show | Weak TPR at 1% FPR; map/rank confound ≈ 0.63; mouse-input consistency weak; tabular model, not ST-Trans | Hiding it |
+| 17 | Threats to validity | Label noise, source confound, no occlusion, quantization, DMA under-representation, adaptive adversaries | — |
+| 18 | Timeline & close | Ingest full corpus → train ST-Trans + baselines → ablation → Chapter 4 | — |
+
+**Slide 8 is your best slide.** Script:
+> *"Before trusting any feature we measured what replays can physically show. View angles move in steps of one
+> mouse count, more than half of live ticks have no motion, and the 8–12 Hz band holds less power than white
+> noise. So we do not assume tremor separates humans from bots. We keep it as one candidate channel and let the
+> ablation decide. That measurement is also why we added target-relative features."*
 
 ---
 
-### Slide 4: Research Questions & Objectives
-- **Key Points:**
-  - **General Objective:** Design, develop, and validate an automated server-side framework utilizing micro-kinematic features and a spatial-temporal transformer to classify aimbots and estimate continuous skill biometrics without client-side software.
-  - **Specific Objectives (SOPs):**
-    1. Extract Active Tracking Windows (ATWs) from 128-tick CS2 replay telemetry.
-    2. Engineer 8 biomechanical and geodesic trajectory features ($\omega_t, \alpha_t, j_t, \kappa_t, S_c, \text{TBP}$).
-    3. Construct a dual-head Spatial-Temporal Trajectory Transformer (ST-Trans) optimized via Binary Focal Loss and Supervised InfoNCE Contrastive Loss.
-    4. Validate detection efficacy against state-of-the-art baselines and verify feature contribution via ablation.
-- **Speaker Script:**  
-  > *"To address this, our research formulates three specific questions: First, how can raw 128-tick view angles be transformed into biomechanically grounded invariants? Second, can an attention-based temporal transformer discriminate micro-corrections from organic motor control under severe class imbalance? Third, can contrastive latent embeddings accurately quantify player skill to detect smurfing? Our objectives systematically build and validate this end-to-end framework."*
+## 4. What we claim, and what we do not
+
+| We claim | We do not claim |
+| :--- | :--- |
+| A leakage-free pipeline from real CS2 replays to session-level cheat scores | That cheats "cannot fake" human motion |
+| Candidate channels grounded in motor-control theory, tested by ablation | That tremor or jerk are invariants |
+| A pilot on real CS2CD matches (Section 5) | Final accuracy, or any achieved 0.01% FPR |
+| A plan to compare against raw-angle and tabular baselines on identical splits | That we beat AntiCheatPT (not yet reproduced) |
+| Server-side analysis without client software | Detection of DMA cheats specifically (labels under-represent them) |
 
 ---
 
-### Slide 5: Conceptual Framework (IPO Model)
-- **Visual:** Flowchart diagram of Input $\rightarrow$ Process $\rightarrow$ Output.
-  - **Input:** 128-Tick `.dem` replay files from official competitive matches (FACEIT Level 1–10).
-  - **Process:**
-    - Active Tracking Window (ATW) Extraction ($30^\circ$ FOV cone, $\pm 64$ tick combat buffer).
-    - Biomechanical Kinematic Transformation (Euler Wrapping, Great-Circle Velocity, Minimum Jerk, 8–12 Hz FFT).
-    - ST-Trans Dual-Head Deep Neural Network (Self-Attention, Focal Loss, InfoNCE Contrastive Clustering).
-  - **Output:**
-    - Binary Aimbot Probability ($P \in [0.0, 1.0]$) with $< 5\%$ False Positive Rate at $95\%$ Sensitivity.
-    - 32-dimensional Biometric Skill Embedding & Calibrated ELO Rating.
-- **Speaker Script:**  
-  > *"Our conceptual framework follows an Input-Process-Output paradigm. We ingest raw 128-tick match replays. In the process phase, we isolate combat engagements using Active Tracking Windows, extract 8-dimensional micro-kinematic invariants, and pass them to our dual-head Spatial-Temporal Trajectory Transformer. The output provides both binary aimbot classification and continuous biometric skill embeddings."*
+## 5. Real-data pilot (CS2CD subset)
+
+Run: `python ingest_cs2cd.py --download_per_folder 40 --seed 0` then `python pilot_study.py`.
+Outputs: `reports/pilot_cs2cd/` (`summary.json`, `session_ablation.csv`).
+
+**Setup.** 40 `with_cheater_present` + 40 `no_cheater_present` matches (seed 0) → 64,014 ATWs →
+**563 player-match sessions (163 cheaters, 400 clean)**. Negatives only from no-cheater matches. Gradient-boosted
+trees on per-session means of 6 statistics per channel; stratified **grouped 5-fold CV by match** (players exist
+in one match only, so folds are also player-disjoint), 5 seeds. This is a fast feasibility probe, not ST-Trans.
+
+### 5.1 Feature-group ablation (session level)
+
+| Feature group | AUROC | AUPRC | TPR @ 1% FPR | TPR @ 5% FPR |
+| :--- | :-: | :-: | :-: | :-: |
+| **All 9 model channels** | **0.820** | 0.559 | 0.02 | 0.19 |
+| Self-kinematics only (no aim error) | 0.787 | 0.530 | 0.02 | 0.18 |
+| Target-relative only (aim error + rate) | 0.763 | 0.516 | 0.02 | 0.19 |
+| Raw angles only (yaw, pitch) | 0.742 | 0.543 | 0.08 | 0.21 |
+| Tremor band power only | 0.649 | 0.459 | 0.08 | 0.18 |
+| Mouse-input consistency only | 0.678 | 0.459 | 0.04 | 0.15 |
+| All 9 + input consistency | 0.806 | 0.535 | 0.00 | 0.13 |
+| *Confound: map only* | 0.637 | 0.369 | 0.00 | 0.05 |
+| *Confound: Valve average rank only* | 0.625 | 0.380 | 0.00 | 0.04 |
+
+AUPRC chance level is 0.29 (163 / 563). Seed-to-seed spread is ≤ 0.026 AUROC.
+
+### 5.2 Are the differences real? (paired bootstrap over matches, 2,000 resamples)
+
+| Comparison | AUROC (full) [95% CI] | Δ AUROC [95% CI] |
+| :--- | :-: | :-: |
+| All 9 vs raw angles | 0.817 [0.749, 0.876] | **+0.070 [+0.027, +0.116]** |
+| All 9 vs self-kinematics only | 0.817 [0.749, 0.876] | **+0.043 [+0.020, +0.066]** |
+| All 9 vs map only (confound) | 0.817 [0.749, 0.876] | **+0.151 [+0.020, +0.279]** |
+
+### 5.3 How to say it (and not over-say it)
+
+- ✅ "On real CS2CD data, engineered channels beat raw view angles, and the target-relative channels add
+  significant signal. Both intervals exclude zero."
+- ✅ "Tremor band power alone is only slightly above the map confound, consistent with our signal probe."
+- ✅ "Detection at strict false-positive rates is not solved: at 1% FPR the pilot catches about 2% of cheaters.
+  That is exactly why the full study reports TPR at strict thresholds rather than AUROC alone."
+- ✅ "Mouse-input consistency was a promising single-match anomaly, but across 163 cheaters it adds nothing at
+  the session level; most CS2CD cheaters' view rotation is explained by mouse input."
+- ❌ Do not compare 0.82 to AntiCheatPT's 0.9336: different model, protocol and unit (session vs window).
+- ❌ Do not present 0.82 as the thesis result; it is a tabular pilot on 10% of CS2CD.
+
+### 5.4 Data facts discovered while building the pilot (use in Q&A)
+- CS2CD "cheater-present" matches have a **median of 4 labeled cheaters** (one match has all 10). Valve's
+  trust-factor matchmaking appears to group cheaters, which is why the "not cheater" label there is unreliable.
+- Maps differ by class (e.g. hostage maps and de_train/de_edin/de_anubis appear only in clean matches), hence
+  the confound baselines.
+- One downloaded file was silently truncated; the downloader now verifies byte counts and file integrity.
 
 ---
 
-### Slide 6: Scope, Delimitations & Ethical Privacy
-- **Key Points:**
-  - **Scope:** Competitive Counter-Strike 2 (CS2) server demo replays at 128 ticks/sec; FACEIT competitive skill tiers (Level 1 to 10).
-  - **Delimitations:** Operates strictly on gaze telemetry (Euler yaw/pitch) and world coordinates; does not capture player keystrokes, audio, or video pixels; does not require client-side execution.
-  - **Ethical Integrity:** 100% non-invasive. Zero private file access, zero Ring-0 access, zero risk of blue-screen crashes or personal data harvesting.
-- **Speaker Script:**  
-  > *"We delimit this study to server-side telemetry in Counter-Strike 2, sampled at 128 ticks per second. Crucially, our system is entirely non-invasive. Unlike kernel drivers that scan personal storage, or computer-vision methods that require costly GPU rendering of every player's screen, our approach operates solely on view-angle coordinates recorded natively by the game server. It respects user privacy while remaining immune to client-side evasion."*
+## 6. Q&A bank (honest answers)
+
+**Q1. "Is 8–12 Hz tremor even visible at 64 Hz in a replay?"**
+> Barely, and we measured it. 64 Hz resolves 8–12 Hz (Nyquist 32 Hz), but small view changes are single mouse
+> counts and real players' tremor-band power sits below white noise. So tremor is a candidate channel tested by
+> ablation, not a pillar of the method. `probe_replay_signal.py` reproduces the measurement.
+
+**Q2. "A cheat developer can add fake tremor and minimum-jerk smoothing. Then what?"**
+> Agreed; prior work (GAN-Aimbots, Witschel & Wressnegger) shows humanized aimbots evade detectors. That is why
+> we do not rely on motion shape alone. Aim assistance has to act on the crosshair–target relationship, which
+> our aim-error channels measure, and our synthetic stress test includes a humanized aimbot that mimics human
+> motion but locks onto targets.
+
+**Q3. "How do you know your labels are correct?"**
+> They are not perfect, and we say so. A label means "this account was banned for cheating", not "this window
+> was assisted". CS2CD's own audit gives 55.6% precision for "not cheater" in cheater matches, so we exclude
+> those players and take negatives only from no-cheater matches (~97% clean). We report session-level metrics
+> as primary and manually review flagged clean-labeled sessions.
+
+**Q4. "Can you detect DMA cheats?"**
+> Server-side analysis does not depend on the client, so a DMA card does not blind it. Most ban labels come
+> from existing anti-cheat systems, though, so DMA cheats are under-represented in training data. We claim
+> detection of aim *assistance*, not specifically DMA. A hardware mouse emulator produces real mouse input, so
+> the input-consistency signal would not catch it; target-relative behavior still could.
+
+**Q5. "How is there no data leakage?"**
+> Splits are disjoint in both players and matches. We group matches that share players into connected
+> components. If the graph collapses into one giant component, we switch to a match-level split that drops the
+> overlapping players' windows. CS2CD player IDs only exist within a match, so they are namespaced per match.
+> The disjointness assertions run on every split, and unit tests cover the giant-component case.
+
+**Q6. "Why a transformer? Wouldn't XGBoost do?"**
+> Maybe, and we test exactly that. Tabular baselines (RF, XGBoost, MLP on 54 window statistics) and a BiLSTM
+> run on identical splits. The pilot already uses boosted trees as a fast probe. If the transformer does not
+> beat them, that is a reportable result.
+
+**Q7. "How do you compare with AntiCheatPT?"**
+> AntiCheatPT reports AUROC 0.9336 on CS2CD with raw inputs. We use the same dataset, and our raw-angle
+> ablation is the closest internal analogue. A faithful reproduction under our leakage-free protocol is planned
+> before the final defense. Until then we do not claim to beat it, because numbers under different splits are
+> not comparable.
+
+**Q8. "Can you really show an FPR below 0.01%?"**
+> Only if we observe zero false positives in at least 30,000 clean held-out windows, and even then only as a
+> bound. Label noise sets a floor: about 3% of CS2CD "clean" players may be cheaters, so a flagged clean player
+> may be a missed cheater. We report TPR at the calibrated threshold, FP counts and bounds per source, never
+> "FPR achieved".
+
+**Q9. "Your aim error ignores walls. Isn't that wrong?"**
+> Demos do not contain map collision geometry, so we cannot raycast. We approximate engagement with a 30° cone,
+> a 3500-unit range and combat events, and state the limitation. Note that tracking enemies through walls is
+> itself cheat-like (wallhack). Prefiring by legitimate players is the main confound, and the model sees it in
+> both classes.
+
+**Q10. "Smurf detection has no ground truth."**
+> Correct. We evaluate it with controlled rank-discrepancy simulations (a high-tier player's sessions tested
+> against a low-tier nominal rank) and report skill-regression error only on players with known ELO. Smurf
+> detection is our secondary objective; aimbot detection is primary.
+
+**Q11. "Why is your dataset balanced when real cheating is rare?"**
+> Training balance aids learning; evaluation reports AUPRC, TPR at strict FPR, and calibrated thresholds, which
+> are what matter at real-world prevalence.
+
+**Q12. "Privacy?"**
+> We use only replay telemetry. SteamIDs and match IDs are salted-SHA-256 pseudonyms (RA 10173), the salt is a
+> managed secret, and no client software or personal files are involved.
+
+**Q13b. "Your pilot AUROC is 0.82 but your target is 0.98. Isn't the target unrealistic?"**
+> The 0.82 comes from a tabular model on 80 matches with noisy account-level labels; the full study uses
+> ST-Trans on the whole corpus. We treat 0.98 as aspirational and judge success by improvement over raw-input
+> and tabular baselines on identical splits, plus TPR at strict FPR. *(Discuss with the adviser whether to
+> restate Table 8 targets relative to baselines before the defense.)*
+
+**Q13c. "Could your model just be learning the map or rank, not cheating?"**
+> We tested that. Map alone gives AUROC 0.64 and rank alone 0.63. Our channels reach 0.82, and the bootstrap
+> interval for the gain over map-only excludes zero. Absolute yaw, which encodes map orientation, is already
+> excluded from the model input.
+
+**Q13. "What if your features turn out useless?"**
+> Then the thesis reports a rigorously measured negative result on real data with a leakage-free protocol,
+> which is still a contribution, since most published anti-cheat numbers lack that rigor.
 
 ---
 
-### Slide 7: Biomechanical Invariants (The Core Science)
-- **Visual:** Diagram of the Human Arm/Hand Musculoskeletal System vs. Algorithmic Micro-step Motors.
-- **Key Points:**
-  - The human motor apparatus is bound by physiological laws that software and microcontrollers cannot emulate without betraying their origin:
-    1. **Flash & Hogan (1985) Minimum Jerk Optimization:** Biological motor planning minimizes the integral of squared jerk ($\int (\frac{d^3\theta}{dt^3})^2 dt$), resulting in smooth, bell-shaped velocity profiles.
-    2. **Spherical Geodesic Curvature on $S^2$:** Human view angles rotate on a 2D spherical manifold, where curvature must be computed via cross products of unit gaze vectors.
-    3. **Euler Coordinate Wrapping:** Angles must wrap across $\pm 180^\circ$ boundaries to prevent false coordinate discontinuities.
-- **Speaker Script:**  
-  > *"The core scientific insight of our thesis is that human motor control is constrained by immutable biomechanical laws. When a human executes an aim flick, the central nervous system optimizes for Minimum Jerk, as proven by Flash and Hogan. This guarantees continuous acceleration and bell-shaped velocity profiles. Algorithmic aimbots—even 'humanized' smoothers—introduce discrete piecewise steps or instantaneous torque shifts that produce extreme jerk impulses."*
-
----
-
-### Slide 8: 8–12 Hz Physiological Hand Tremor (The Biometric Fingerprint)
-- **Visual:** FFT Power Spectral Density (PSD) comparison graph: Organic Human Aim (distinct peak at 8–12 Hz) vs. Aimbot (flatline or synthetic white noise).
-- **Key Points:**
-  - Involuntary motor-unit synchronization produces an oscillating micro-tremor in the $8.0\text{--}12.0\text{ Hz}$ frequency band.
-  - Legitimate human aim displays $15\%\text{--}45\%$ of its voluntary motor energy in this tremor band.
-  - Aimbots either completely lack tremor ($\text{TBP} < 2\%$) or inject random Gaussian noise lacking biological phase coherence.
-  - Constrained relative to the voluntary motor band $[1.0, 30.0]\text{ Hz}$ to eliminate mouse sensor DPI noise.
-- **Speaker Script:**  
-  > *"Furthermore, every living human hand exhibits an involuntary 8 to 12 Hz physiological tremor caused by motor-unit discharge oscillations. By taking the Fast Fourier Transform across a sliding window, we calculate the Tremor Band Power. Legitimate human aim consistently channels 15 to 45 percent of active motor energy into this band. Algorithmic aimbots display less than 2 percent, because synthetic algorithms optimize purely for trajectory convergence."*
-
----
-
-### Slide 9: System Architecture & Data Flow
-- **Visual:** High-resolution pipeline schematic showing `demoparser2` $\rightarrow$ `atw_filter.py` $\rightarrow$ `kinematics.py` $\rightarrow$ `st_transformer.py` $\rightarrow$ Dual Heads.
-- **Key Points:**
-  - Modular, highly decoupled architecture written in Python/PyTorch with Cython-accelerated parsing.
-  - Linear time complexity $O(N)$ for parsing and feature extraction.
-- **Speaker Script:**  
-  > *"Here is our end-to-end architecture. Judah will now discuss the methodology and technical implementation details."*
-
----
-
-### Slide 10: Active Tracking Window (ATW) Extraction
-- **Visual:** Diagram of a CS2 map with a player's $30^\circ$ FOV cone intersecting an enemy hitbox, showing the $-64$ to $+64$ tick temporal slice.
-- **Key Points:**
-  - Full match demos are 45 minutes long, with over 75% consisting of passive navigation (running, inspecting weapons).
-  - ATW isolates critical engagement windows:
-    - Angular FOV $\le 30.0^\circ$ relative to an opponent.
-    - Line-of-sight visibility check.
-    - Temporal padding: 64 ticks (0.5s) prior to combat and 64 ticks post-kill.
-  - Filters out background noise, reducing computational overhead by $> 80\%$.
-- **Speaker Script:**  
-  > *"Analyzing an entire 45-minute replay would drown subtle cheat signals in walking and navigation noise. To solve this, we formulated the Active Tracking Window (ATW). The parser monitors spatial vectors between opponents. When an enemy enters a 30-degree field of view with line-of-sight, or a weapon discharge occurs, the system extracts a window spanning 64 ticks before and after the event. This isolates high-stakes aiming decisions where cheat activation occurs."*
-
----
-
-### Slide 11: 8D Kinematic Feature Extraction Engine
-- **Visual:** Mathematical equation cards for Channels 1 through 8.
-  - Channel 1 & 2: Yaw & Pitch ($\theta_{\text{yaw}}, \theta_{\text{pitch}}$)
-  - Channel 3: Great-Circle Angular Velocity ($\omega_t = \frac{1}{\Delta t} \sqrt{(\Delta \theta_{\text{pitch}})^2 + (\cos \theta_{\text{pitch}} \Delta \theta_{\text{yaw}})^2}$)
-  - Channel 4: Angular Acceleration ($\alpha_t = \frac{\Delta \omega_t}{\Delta t}$)
-  - Channel 5: Angular Jerk ($j_t = \frac{\Delta \alpha_t}{\Delta t}$)
-  - Channel 6: Spherical Geodesic Curvature ($\kappa_t = \frac{\|\mathbf{u}_t \times \mathbf{u}_{t+1}\|}{\Delta \theta_t}$)
-  - Channel 7: Path Efficiency / Tortuosity ($S_c = \frac{\sum \Delta \theta}{\text{great\_circle\_chord}}$)
-  - Channel 8: 8–12 Hz Tremor Band Power ($\text{TBP} = \frac{\sum_{8}^{12} |X(f)|^2}{\sum_{1}^{30} |X(f)|^2 + \epsilon}$)
-- **Speaker Script:**  
-  > *"For each tick in the window, our kinematic engine computes an 8-dimensional feature vector. We compute great-circle angular velocity on the unit sphere, followed by acceleration and jerk. We measure spherical geodesic curvature via cross products of 3D gaze vectors, and path tortuosity. Finally, we compute the 8–12 Hz Tremor Band Power via sliding-window FFT. All angle differences strictly apply shortest-path Euler wrapping to eliminate boundary jump artifacts."*
-
----
-
-### Slide 12: ST-Trans Deep Transformer Architecture
-- **Visual:** ST-Trans Model architecture diagram: Input Linear Projection ($8 \rightarrow 128$) $\rightarrow$ Sinusoidal Positional Encoding $\rightarrow$ 4 Transformer Encoder Layers (8 heads, $d_{\text{ff}}=512$) $\rightarrow$ Mask-Aware Temporal Pooling $\rightarrow$ Dual Heads.
-- **Key Points:**
-  - $d_{\text{model}} = 128$, $\text{nhead} = 8$, $\text{layers} = 4$, $\text{dropout} = 0.1$.
-  - Multi-Head Self-Attention captures both short-range micro-adjustments ($10\text{--}50\text{ ms}$) and long-range ballistic planning ($200\text{--}800\text{ ms}$).
-  - Mask-Aware Temporal Pooling ensures zero zero-padding distortion for variable-length ATW sequences ($32 \le L \le 512$).
-- **Speaker Script:**  
-  > *"To model temporal dependencies across ticks, we designed the Spatial-Temporal Trajectory Transformer (ST-Trans). Unlike recurrent networks that process sequentially and suffer from vanishing gradients, our transformer utilizes multi-head self-attention. This allows the model to simultaneously analyze fine-grained 10-millisecond flick onsets and 500-millisecond trajectory arcs. Variable sequence lengths are handled via mask-aware temporal pooling."*
-
----
-
-### Slide 13: Multi-Task Loss Formulation
-- **Visual:** Mathematical formulation of Composite Loss $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{focal}} + 0.5 \mathcal{L}_{\text{infonce}} + 0.2 \mathcal{L}_{\text{elo}}$.
-- **Key Points:**
-  - **Head A (Aimbot):** Binary Focal Loss ($\alpha=0.25, \gamma=2.0$) heavily down-weights easy non-combat samples, resolving the $< 1\%$ cheat class imbalance.
-  - **Head B (Smurf):** Supervised InfoNCE Loss ($\tau=0.07$) clusters trajectories of the same player identity while pushing different players apart in a 32-dim unit hypersphere.
-  - **Auxiliary Head C:** Smooth L1 regression for calibrated ELO skill estimation.
-- **Speaker Script:**  
-  > *"Training is governed by a multi-task composite loss. To combat extreme class imbalance where less than 1 percent of ticks exhibit cheating, Head A optimizes Binary Focal Loss with gamma=2.0, down-weighting easy legitimate aim. Simultaneously, Head B optimizes Supervised InfoNCE contrastive loss over a 32-dimensional hypersphere, pulling together trajectories from the same player and pushing apart distinct players to construct an invariant biometric profile."*
-
----
-
-### Slide 14: Dataset Ingestion & Zero Data Leakage Guarantee
-- **Visual:** Diagram of the Partition Split: Unique Match & SteamID separation ($P_{\text{train}} \cap P_{\text{test}} = \emptyset$).
-- **Key Points:**
-  - Ingestion from FACEIT Open API + Backblaze CDN across all 10 skill tiers.
-  - Official ban verification (`GET /players/{id}/bans`) with pre-ban timestamp filtering.
-  - 80/10/10 train/val/test split partitioned strictly by unique SteamID.
-  - Completely eliminates player-identity memorization across splits.
-- **Speaker Script:**  
-  > *"Data integrity is paramount in Data Science. If samples from the same player appear in both training and test sets, the model can memorize individual mouse sensitivity rather than learning generalizable cheating dynamics. We enforce a zero-data-leakage partitioning protocol where player IDs and match IDs in the test set are strictly disjoint from the training set."*
-
----
-
-### Slide 15: SOTA Comparison Baseline & Evaluation Framework
-- **Visual:** State-of-the-Art Benchmark Comparison against Published Literature (AntiCheatPT, IEEE CoG 2025):
-  | Model / Methodology | Input Representation | Telemetry Corpus | Reported / Target AUROC | Primary Limitation Addressed |
-  | :--- | :--- | :--- | :---: | :--- |
-  | **AntiCheatPT (Loo et al., 2025)** | Raw Coordinates (Pitch, Yaw, Pos) | CS2CD (795 Matches, 64 Hz) | **0.9336** (93.4%) | Lacks domain-specific kinematic inductive bias; vulnerable to smoothed micro-corrections |
-  | **Tabular Baseline (RF / GBDT)** | 48 Summary Statistics | CS2CD + ATW Segments | ~0.88 – 0.91 | Destroys temporal sequence ordering across engagement |
-  | **Sequential Baseline (BiLSTM)** | 8D Kinematics (64 Hidden Units) | CS2CD + ATW Segments | ~0.91 – 0.93 | Lacks long-range cross-attention across multi-second ATWs |
-  | **ST-Trans (Our Proposed Architecture)** | **8D Micro-Kinematics + Dual Heads** | **CS2CD + Rolling FACEIT Stream** | **Target: > 0.9500** | Explicitly models Minimum Jerk, Geodesic Curvature & Biometric Embeddings |
-- **Speaker Script:**  
-  > *"To establish rigorous academic validity, our research benchmarks directly against the newly published state-of-the-art: AntiCheatPT, published at the 2025 IEEE Conference on Games by the IT University of Copenhagen. While AntiCheatPT demonstrated that transformers achieve 93.36% AUC on CS2 raw coordinates, it treats view angles purely as arbitrary sequential numbers. Our thesis hypothesis is that augmenting transformers with explicit biomechanical inductive biases—Flash & Hogan minimum jerk optimization, spherical geodesic curvature, and band-limited tremor dynamics—will elevate discrimination beyond 95% AUC while suppressing false-positive spikes on high-tier pro flicks."*
-
----
-
-### Slide 16: Feature Ablation Study (Empirical Proof of Invariants)
-- **Visual:** 3-Panel Ablation Plot (`reports/ablation_study.png`):
-  - AUROC/AUPRC comparison across 6 configurations.
-  - False Positive Rate @ 95% Sensitivity.
-  - Relative performance degradation ($\Delta \text{AUROC}$).
-- **Key Points:**
-  - Removing 8–12 Hz Tremor drops discrimination and increases false positive rates.
-  - Removing Minimum Jerk degrades detection of micro-snaps.
-  - Raw coordinates alone fail to match biomechanically informed representations.
-- **Speaker Script:**  
-  > *"To prove that our engineered biomechanical features are necessary, we conducted a systematic feature ablation study. When the 8–12 Hz Tremor PSD is removed, false positive rates increase significantly because the model loses its biological signature. When angular jerk is removed, micro-snap detection degrades. When trained on raw coordinates alone, the transformer cannot reliably infer the higher-order derivatives of motor control. Every feature in our 8D space contributes directly to detection accuracy."*
-
----
-
-### Slide 17: Live Terminal Demonstration
-- **Visual:** Terminal screen showing execution of `demo_sample.py` and `analyze_match.py`.
-- **Key Points:**
-  - Real-time audit of human vs. hardware aimbot trajectories.
-  - Micro-kinematic breakdown: Jerk impulse detection, Tremor PSD ratio, Aimbot Probability score.
-- **Speaker Script:**  
-  > *"We now invite the panel to observe our working prototype in action, demonstrating live classification of genuine pro player telemetry versus synthetic hardware-snap aimbots in milliseconds."*
-
----
-
-### Slide 18: Summary, Defense Timeline & Next Steps
-- **Key Points:**
-  - Chapters 1–3 fully drafted, audited, and aligned with thesis proposal.
-  - All 26/26 automated unit tests passing across kinematics, dataset, parser, and model.
-  - Integration with the public IEEE CS2CD dataset (795 matches) and autonomous FACEIT rolling buffer.
-  - Outline Defense: November 2026; Target Final Oral Defense: May–June 2027.
-- **Speaker Script:**  
-  > *"In summary, our research provides a non-invasive, privacy-preserving, server-side anti-cheat and smurf detection framework founded on biological motor invariants and temporal transformers. We thank you for your time and welcome your insights, critiques, and questions."*
-
----
-
-## 🛡️ 3. Panel Defensive Q&A Matrix (Anticipated Tough Questions & Model Answers)
-
-### ❓ Question 1: "Why use Trajectory Transformers instead of Computer Vision (YOLO/CNNs) analyzing the game screen?"
-> **Airtight Data Science Defense:**  
-> *"Computer vision anti-cheat approaches require rendering 10 distinct video streams per match at 60+ FPS, consuming massive GPU compute and introducing video compression artifacts, occlusions, and map-specific visual noise. Furthermore, CV models cannot access native 64 Hz sub-tick movement vectors. In contrast, our micro-kinematic approach operates directly on authoritative server gaze vectors—a stream of floating-point numbers requiring less than 1% of the compute, $O(N)$ linear parsing speed, zero rendering overhead, and full immunity to visual camouflage or in-game smoke/flashbang effects."*
-
----
-
-### ❓ Question 2: "How can you be certain that 8–12 Hz Tremor is biological hand tremor and not mouse sensor jitter or high polling rates?"
-> **Airtight Data Science Defense:**  
-> *"Modern gaming mice operate at polling rates between 1,000 Hz and 8,000 Hz, with sensor noise and DPI jitter appearing as uniform high-frequency white noise spanning $100\text{--}500\text{ Hz}$. In `src/features/kinematics.py`, our Tremor Band Power (TBP) explicitly computes the relative power in $[8.0, 12.0]\text{ Hz}$ normalized against the active voluntary motor band $[1.0, 30.0]\text{ Hz}$ per Equation 10. By filtering out frequencies above 30 Hz, mouse sensor noise is discarded. Furthermore, clinical neurophysiology literature (Elble & Randall, 1976; Flash & Hogan, 1985) establishes that physiological tremor is rhythmic and phase-coherent, whereas sensor noise is stochastic and independent of muscle contraction velocity."*
-
----
-
-### ❓ Question 3: "Aimbot developers could simply inject fake 8–12 Hz noise and minimum-jerk smoothing into their cheats. How does your model survive that?"
-> **Airtight Data Science Defense:**  
-> *"This is the arms-race dilemma. However, injecting artificial tremor requires the cheat developer to solve an inverse-biomechanical synthesis problem: real human tremor amplitude is velocity-dependent—it attenuates during rapid ballistic acceleration and amplifies during high-precision deceleration (the terminal correction phase). If a cheat applies static Gaussian 10 Hz noise, our transformer's self-attention layers detect the phase incoherence between velocity $\omega_t$ and tremor power $\text{TBP}_t$. Furthermore, if an aimbot applies polynomial minimum-jerk smoothing, it inevitably increases the time-to-target ($\text{TTT}$), sacrificing the cheat's primary competitive advantage: instantaneous reaction speed."*
-
----
-
-### ❓ Question 4: "Why did you choose Supervised InfoNCE Loss for smurf detection instead of standard classification or clustering (k-Means, GMM)?"
-> **Airtight Data Science Defense:**  
-> *"Smurf detection is an open-world biometric re-identification task. Traditional multi-class classification requires a fixed set of player classes: when a new player joins the platform, the entire network must be retrained. Unsupervised clustering like k-Means lacks class supervision and collapses under high-dimensional temporal noise. Supervised InfoNCE contrastive loss maps variable-length micro-kinematics onto a metric space (a 32-dimensional unit hypersphere $\mathbb{S}^{31}$) where trajectories from the same motor system are pulled together and distinct motor systems are pushed apart by a margin determined by temperature $\tau=0.07$. This allows zero-shot biometric profiling: we can determine if an unranked Level 1 account clusters with a known Level 10 player simply by computing cosine similarity in the latent embedding space."*
-
----
-
-### ❓ Question 5: "How does your dataset partitioning guarantee Zero Data Leakage?"
-> **Airtight Data Science Defense:**  
-> *"A naive random split or temporal train-test split leaks player-specific biometrics: if Player A's Round 1 is in the training set and Round 2 is in the test set, the model memorizes Player A's unique DPI, sensitivity, and habits, falsely inflating evaluation metrics. In `src/data/dataset.py`, our `create_partitioned_dataloaders` function strictly enforces disjoint partitioning by unique SteamID: $P_{\text{train}} \cap P_{\text{val}} = \emptyset$ and $P_{\text{train}} \cap P_{\text{test}} = \emptyset$. A player who appears in the training set is never evaluated in the test set, guaranteeing that the model learns generalizable kinematic invariants rather than memorizing individual identities."*
-
----
-
-### ❓ Question 6: "In competitive esports, what happens if your model falsely bans a pro player (False Positive)?"
-> **Airtight Data Science Defense:**  
-> *"In esports operations, a 98% accuracy is unacceptable if the 2% error consists of false bans against legitimate players. This is why our evaluation framework does not rely solely on accuracy or AUROC. In `evaluate.py`, we explicitly compute **FPR @ 95% TPR** (False Positive Rate at 95% Sensitivity). Our model achieves $< 0.1\%$ false positive rate under strict thresholds. Furthermore, in commercial deployment, ST-Trans is designed as a server-side flagging and shadow-auditing system: flagged segments are queued for human referee review or high-precision shadow verification rather than issuing automated instant bans, ensuring zero career-ending false positives."*
-
----
-
-## 💻 4. Live Terminal Demonstration Script
+## 7. Live demo (only real, reproducible steps)
 
 ```powershell
-# 1. Run full automated unit test suite
-& "venv\Scripts\python.exe" -m pytest "tests" -v
-
-# 2. Run live single-trajectory simulation
-& "venv\Scripts\python.exe" "demo_sample.py"
-
-# 3. Run full match forensic audit
-& "venv\Scripts\python.exe" "analyze_match.py" --match_path "data/processed_parquet"
+cd cs2-trajectory-transformer
+# 1. Tests (state the count shown)
+venv\Scripts\python.exe -m pytest tests -q
+# 2. What replays can show (Slide 8 numbers, live)
+venv\Scripts\python.exe probe_replay_signal.py data\raw_demos\clean\1-1cfcda8f-0d0c-46ee-8863-f746235e48e7-1-1.dem
+# 3. Pilot tables (pre-computed; re-running takes ~15 minutes, so show the CSVs)
+type reports\pilot_cs2cd\session_ablation.csv
+type reports\pilot_cs2cd\session_bootstrap.csv
 ```
+Do **not** demo `demo_sample.py` as detection evidence: it runs on synthetic inputs. Do not run
+`analyze_match.py` without a checkpoint trained on real data.
 
 ---
 
-## 📋 5. Defense Day Readiness Checklist
+## 8. Readiness checklist
 
-| Category | Item | Status / Verification |
-| :--- | :--- | :---: |
-| **Manuscript** | Approved Chapters 1–3 printed and bound with adviser sign-off | 🔲 Prepare 3 hard copies |
-| **Code Integrity** | All 23 unit tests passing (`pytest tests/`) | ✅ Verified 23/23 passing |
-| **Benchmark Artifacts** | `reports/benchmark_summary.csv` & `reports/roc_pr_curve.png` | ✅ Generated & verified |
-| **Ablation Artifacts** | `reports/ablation_study_summary.csv` & `reports/ablation_study.png` | ✅ Generated & verified |
-| **Demo Laptop Setup** | Virtual environment activated, dependencies loaded, external monitor tested | 🔲 Rehearse on presentation laptop |
-| **Backup Slides** | PDF version of slide deck exported and stored on USB flash drive | 🔲 Export 16:9 PDF backup |
-| **Timekeeping** | Rehearsed presentation strictly under 18 minutes | 🔲 Conduct 2 dry runs |
+| Item | Status |
+| :--- | :---: |
+| Manuscript Ch. 1–3 aligned with code (2026-10-11 edits); adviser has read the new wording | 🔲 |
+| TOC / lists page numbers regenerated in Word (they were out of sync before the edits) | 🔲 |
+| Pilot run reproduced on the presentation laptop (or results exported) | 🔲 |
+| Slides use only numbers from `reports/pilot_cs2cd/` and the probe; no synthetic numbers | 🔲 |
+| Each speaker can answer Q1–Q13 without notes | 🔲 |
+| Two timed dry runs under 18 minutes | 🔲 |
+| PDF backup of slides on USB | 🔲 |

@@ -1,0 +1,10 @@
+,AUROC_mean,AUROC_std,AUPRC_mean,TPR_at_FPR1%,TPR_at_FPR5%
+All 9 model channels,0.82,0.002,0.559,0.023,0.185
+Self-kinematics only (no aim error),0.787,0.008,0.53,0.021,0.177
+Target-relative only (aim error + rate),0.763,0.01,0.516,0.021,0.189
+Tremor band power only,0.649,0.007,0.459,0.08,0.179
+"Raw angles only (yaw, pitch)",0.742,0.01,0.543,0.082,0.207
+Mouse-input consistency only,0.678,0.014,0.459,0.037,0.153
+All 9 channels + input consistency,0.806,0.012,0.535,0.004,0.125
+Confound check: map only,0.637,0.026,0.369,0.0,0.049
+Confound check: avg rank only,0.625,0.021,0.38,0.0,0.037
