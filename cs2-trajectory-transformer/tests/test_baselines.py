@@ -113,7 +113,7 @@ def test_audit_clean_atw_quota_fail_closed(tmp_path):
         df = pd.DataFrame({
             'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
             'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
-            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32, 'aim_error': [3.14159]*32, 'aim_error_rate': [0.0]*32,
             'match_id': "match_solo", 'steamid': 1001, 'segment_id': seg, 'is_aimbot': 0, 'player_elo': 1500.0
         })
         df.to_parquet(str(tmp_path / f"match_solo_p1001_seg{seg}.parquet"), index=False)

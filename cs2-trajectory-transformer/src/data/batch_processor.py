@@ -10,12 +10,12 @@ import logging
 import hashlib
 import numpy as np
 import pandas as pd
-from typing import List, Optional, Dict, Union, Iterable
+from typing import List, Optional, Dict, Tuple, Union, Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from .demo_parser import CS2DemoParser
 from .atw_filter import extract_active_tracking_windows
-from features.kinematics import compute_kinematic_features
+from features.kinematics import MODEL_FEATURE_COLUMNS, compute_aim_error, compute_kinematic_features
 
 try:
     from dotenv import load_dotenv
@@ -65,16 +65,85 @@ def pseudonymize_match_id(match_id: str, salt: Optional[str] = None) -> str:
 
 
 
-FEATURE_COLUMNS = [
-    'yaw', 
-    'pitch', 
-    'angular_velocity', 
-    'angular_accel', 
-    'angular_jerk', 
-    'trajectory_curvature', 
-    'curvature_entropy', 
-    'tremor_power_8_12hz'
-]
+FEATURE_COLUMNS = MODEL_FEATURE_COLUMNS
+
+COMBAT_EVENT_NAMES = ['weapon_fire', 'player_hurt', 'player_death']
+PLAYING_TEAMS = {2, 3}  # CS2 team_num: 2 = T, 3 = CT (0/1 are unassigned/spectators)
+
+
+def collect_combat_event_ticks(events_dict: Dict[str, pd.DataFrame]) -> Dict[str, set]:
+    """
+    Thesis Reference: Chapter 3, Section 3.2.3 — Combat Temporal Buffers.
+    Maps str(steamid) -> set of ticks where that player fired, dealt or took damage, or died/killed.
+    """
+    event_ticks_by_player: Dict[str, set] = {}
+    for evt_name in COMBAT_EVENT_NAMES:
+        evt_df = events_dict.get(evt_name, pd.DataFrame())
+        if evt_df.empty or 'tick' not in evt_df.columns:
+            continue
+        for col in ['user_steamid', 'attacker_steamid']:
+            if col in evt_df.columns:
+                for s_id, grp in evt_df.groupby(col):
+                    event_ticks_by_player.setdefault(str(s_id), set()).update(
+                        grp['tick'].dropna().astype(int).tolist()
+                    )
+    return event_ticks_by_player
+
+
+def extract_player_feature_windows(
+    ticks_df: pd.DataFrame,
+    steamid: Union[str, int],
+    event_ticks: List[int],
+    min_window_len: int = 64,
+    tick_rate: float = 64.0,
+    use_fov_filter: bool = True
+) -> List[pd.DataFrame]:
+    """
+    Single preprocessing path shared by training ingestion and match analysis
+    (prevents train/inference skew).
+
+    1. Selects the player's live ticks and the living opposing team's ticks.
+    2. Extracts Active Tracking Windows (FOV cone + combat event buffers).
+    3. Computes per-tick target aim error over the player's full stream, then slices it per ATW.
+    4. Computes the candidate kinematic channels per ATW.
+
+    Returns a list of featured ATW DataFrames (columns include MODEL_FEATURE_COLUMNS).
+    """
+    p_df = ticks_df[ticks_df['steamid'] == steamid]
+    if 'is_alive' in p_df.columns:
+        p_df = p_df[p_df['is_alive'].astype(bool)]
+    p_df = p_df.sort_values('tick').reset_index(drop=True)
+    if len(p_df) < min_window_len:
+        return []
+
+    enemy_df = None
+    if 'team_num' in p_df.columns:
+        # Opponents are decided per tick: teams swap sides at halftime, so a team fixed from the
+        # first tick would turn teammates (and the player themself, at distance 0) into "enemies".
+        p_team_by_tick = p_df[['tick', 'team_num']].rename(columns={'team_num': 'p_team'})
+        others = ticks_df[(ticks_df['steamid'] != steamid) & ticks_df['team_num'].isin(PLAYING_TEAMS)]
+        others = others.merge(p_team_by_tick, on='tick')
+        enemy_df = others[others['team_num'] != others['p_team']].drop(columns='p_team')
+
+    atw_segments = extract_active_tracking_windows(
+        player_df=p_df,
+        enemy_df=enemy_df if use_fov_filter else None,
+        event_ticks=sorted(event_ticks),
+        fov_deg=30.0,
+        tick_buffer=64,
+        min_window_len=min_window_len,
+        max_window_len=512
+    )
+    if not atw_segments:
+        return []
+
+    aim_error_by_tick = pd.Series(compute_aim_error(p_df, enemy_df), index=p_df['tick'].to_numpy())
+    featured = []
+    for seg_df in atw_segments:
+        seg_aim_error = aim_error_by_tick.reindex(seg_df['tick'].to_numpy()).fillna(np.pi).to_numpy()
+        featured.append(compute_kinematic_features(seg_df, tick_rate=tick_rate, extract_tremor=True, aim_error=seg_aim_error))
+    return featured
+
 
 
 def process_single_demo(
@@ -83,8 +152,8 @@ def process_single_demo(
     is_cheater_demo: bool = False,
     banned_steamids: Optional[Iterable[Union[str, int]]] = None,
     player_elos: Optional[Dict[Union[str, int], float]] = None,
-    default_elo: float = 1500.0,
-    min_window_len: int = 32,
+    default_elo: Optional[float] = None,
+    min_window_len: int = 64,
     tick_rate: float = 64.0,
     use_fov_filter: bool = True,
     pseudonymize_matches: bool = True,
@@ -94,9 +163,9 @@ def process_single_demo(
     Processes a single CS2 .dem replay:
     1. Parses player ticks and weapon events.
     2. Identifies all players and teams.
-    3. Extracts Active Tracking Windows (combining 30-deg FOV cones & weapon fire buffers).
-    4. Computes 8D kinematic & tremor features at native 64 Hz.
-    5. Correctly labels ONLY verified banned cheaters (never false-labeling clean players).
+    3. Extracts Active Tracking Windows (30-deg FOV cones & combat event buffers) and computes
+       the candidate channels via extract_player_feature_windows (shared with analyze_match.py).
+    4. Labels ONLY accounts in the verified ban set (account-level weak label; see loop comment).
     6. Saves trajectory segments to Parquet.
     
     Returns the count of extracted ATW trajectory segments.
@@ -114,21 +183,7 @@ def process_single_demo(
             return 0
             
         events_dict = parser.parse_events()
-        
-        # Collect all combat engagement events (weapon_fire, player_hurt, player_death)
-        # Thesis Reference: Chapter 3, Section 3.2.3 — Combat Temporal Buffers
-        event_ticks_by_player = {}
-        for evt_name in ['weapon_fire', 'player_hurt', 'player_death']:
-            evt_df = events_dict.get(evt_name, pd.DataFrame())
-            if evt_df.empty or 'tick' not in evt_df.columns:
-                continue
-            for col in ['user_steamid', 'attacker_steamid']:
-                if col in evt_df.columns:
-                    for s_id, grp in evt_df.groupby(col):
-                        s_str = str(s_id)
-                        if s_str not in event_ticks_by_player:
-                            event_ticks_by_player[s_str] = set()
-                        event_ticks_by_player[s_str].update(grp['tick'].dropna().astype(int).tolist())
+        event_ticks_by_player = collect_combat_event_ticks(events_dict)
         
         # Load external banned steamid and ELO manifests if needed
         discovered_elos = {}
@@ -171,65 +226,51 @@ def process_single_demo(
         # Combine discovered ELOs with explicitly passed dictionary
         combined_elos = {**discovered_elos, **(player_elos or {})}
         
-        steam_ids = ticks_df['steamid'].dropna().unique()
+        if 'team_num' in ticks_df.columns:
+            steam_ids = ticks_df.loc[ticks_df['team_num'].isin(PLAYING_TEAMS), 'steamid'].dropna().unique()
+        else:
+            steam_ids = ticks_df['steamid'].dropna().unique()
         total_segments = 0
         
         for steamid in steam_ids:
-            p_df = ticks_df[ticks_df['steamid'] == steamid].sort_values('tick').reset_index(drop=True)
-            if len(p_df) < min_window_len:
-                continue
-                
-            # Filter combat engagement ticks for this player
-            event_ticks = sorted(list(event_ticks_by_player.get(str(steamid), [])))
-                
-            # Extract enemy telemetry for 30-degree FOV cone encounters
-            enemy_df = None
-            if use_fov_filter and 'team_num' in p_df.columns:
-                p_team = p_df['team_num'].iloc[0]
-                enemy_df = ticks_df[ticks_df['team_num'] != p_team]
-                
-            # Extract Active Tracking Windows (ATW)
-            atw_segments = extract_active_tracking_windows(
-                player_df=p_df,
-                enemy_df=enemy_df,
-                event_ticks=event_ticks,
-                fov_deg=30.0,
-                tick_buffer=64,
+            featured_segments = extract_player_feature_windows(
+                ticks_df,
+                steamid,
+                event_ticks=list(event_ticks_by_player.get(str(steamid), [])),
                 min_window_len=min_window_len,
-                max_window_len=512
+                tick_rate=tick_rate,
+                use_fov_filter=use_fov_filter
             )
             
-            # Ground-truth cheater labeling:
-            # Tag ONLY verified banned accounts. Never blindly label clean players in a match.
+            # Ground-truth labeling (weak supervision): is_aimbot = 1 means "this account received
+            # a FACEIT cheating ban", NOT "aim assistance was active in this window". Bans do not
+            # say which cheat was used (wallhack-only accounts are included) and humanized aimbots
+            # act in only some engagements, so window labels are noisy; report player-match
+            # session metrics as the primary result. Never label a whole lobby as cheaters.
             if banned_set:
                 is_player_cheater = int(str(steamid) in banned_set)
             elif is_cheater_demo:
-                # If demo filename includes the specific cheater steamid or is synthetic cheater match
-                is_player_cheater = int(str(steamid) in match_name or 'match_x' in match_name)
+                # Fallback: the cheater's SteamID is embedded in the demo filename.
+                is_player_cheater = int(str(steamid) in match_name)
             else:
                 is_player_cheater = 0
                 
-            p_elo = default_elo
-            if combined_elos:
-                p_elo = combined_elos.get(str(steamid), combined_elos.get(int(steamid) if str(steamid).isdigit() else 0, default_elo))
+            # Missing ELO stays NaN (masked out of the ELO loss) instead of a fake 1500 default.
+            p_elo = combined_elos.get(str(steamid), default_elo)
             
             anon_steamid = pseudonymize_steamid(steamid, salt=salt)
             anon_match_id = pseudonymize_match_id(match_name, salt=salt) if pseudonymize_matches else match_name
-            for seg_idx, seg_df in enumerate(atw_segments):
-                # Compute 8D biomechanical features at native 64 Hz
-                featured_df = compute_kinematic_features(seg_df, tick_rate=tick_rate, extract_tremor=True)
-                
+            for seg_idx, featured_df in enumerate(featured_segments):
                 # Metadata tags (RA 10173 Cryptographically Pseudonymized)
                 featured_df['match_id'] = anon_match_id
                 featured_df['steamid'] = anon_steamid
                 featured_df['segment_id'] = seg_idx
                 featured_df['is_aimbot'] = is_player_cheater
-                featured_df['player_elo'] = float(p_elo)
+                featured_df['player_elo'] = float(p_elo) if p_elo is not None else np.nan
                 
                 # Export to Parquet
                 out_filename = f"{anon_match_id}_p{anon_steamid}_seg{seg_idx}.parquet"
-                out_path = os.path.join(output_dir, out_filename)
-                featured_df.to_parquet(out_path, index=False)
+                featured_df.to_parquet(os.path.join(output_dir, out_filename), index=False)
                 total_segments += 1
 
                 
@@ -264,7 +305,7 @@ def batch_process_demos(
             b_ids = banned_steamids_map.get(m_name) if banned_steamids_map else None
             p_elos = player_elos_map.get(m_name) if player_elos_map else None
             fut = executor.submit(
-                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, 1500.0, 32, tick_rate, True, pseudonymize_matches, salt
+                process_single_demo, demo, output_dir, is_cheater_dataset, b_ids, p_elos, None, 64, tick_rate, True, pseudonymize_matches, salt
             )
             futures[fut] = demo
             

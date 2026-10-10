@@ -21,16 +21,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from data.demo_parser import CS2DemoParser
 from data.demo_downloader import CS2ReplayDownloader
-from data.atw_filter import extract_active_tracking_windows
+from data.batch_processor import collect_combat_event_ticks, extract_player_feature_windows, PLAYING_TEAMS
 from data.dataset import normalize_kinematic_features, load_scaler_stats
-from features.kinematics import compute_kinematic_features
+from features.kinematics import MODEL_FEATURE_COLUMNS
 from models.st_transformer import STTrajectoryTransformer
 
-FEATURE_COLS = [
-
-    'yaw', 'pitch', 'angular_velocity', 'angular_accel',
-    'angular_jerk', 'trajectory_curvature', 'curvature_entropy', 'tremor_power_8_12hz'
-]
+FEATURE_COLS = MODEL_FEATURE_COLUMNS
 
 
 def load_st_transformer(checkpoint_path: str, device: torch.device, allow_untrained: bool = False):
@@ -96,7 +92,7 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
     print("\n[*] Ingesting high-frequency tick telemetry & combat events...")
     ticks_df = parser.parse_ticks()
     events_dict = parser.parse_events()
-    fire_events = events_dict.get('weapon_fire', pd.DataFrame())
+    event_ticks_by_player = collect_combat_event_ticks(events_dict)
 
     parse_time = time.time() - start_t
     print(f"[OK] Ingested {len(ticks_df):,} telemetry ticks across all players in {parse_time:.2f}s.")
@@ -123,22 +119,16 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
     # 4. Analyze each player
     players_data = []
     player_names = {}
-    for steamid in ticks_df['steamid'].dropna().unique():
-        p_ticks = ticks_df[ticks_df['steamid'] == steamid].sort_values('tick').reset_index(drop=True)
-        if len(p_ticks) < 64:
-            continue
+    playing = ticks_df[ticks_df['team_num'].isin(PLAYING_TEAMS)] if 'team_num' in ticks_df.columns else ticks_df
+    for steamid in playing['steamid'].dropna().unique():
+        p_ticks = ticks_df[ticks_df['steamid'] == steamid]
         p_name = p_ticks['name'].dropna().iloc[0] if 'name' in p_ticks.columns and not p_ticks['name'].dropna().empty else f"Player_{steamid}"
         player_names[steamid] = p_name
 
-        # Weapon fire ticks
-        if not fire_events.empty and 'user_steamid' in fire_events.columns:
-            p_fires = fire_events[fire_events['user_steamid'].astype(str) == str(steamid)]
-            event_ticks = p_fires['tick'].tolist() if 'tick' in p_fires.columns else []
-        else:
-            event_ticks = []
-
-        # Extract Active Tracking Windows
-        atws = extract_active_tracking_windows(p_ticks, event_ticks=event_ticks, tick_buffer=64, min_window_len=64)
+        # Same ATW + feature path as training ingestion (batch_processor) -> no train/inference skew.
+        atws = extract_player_feature_windows(
+            ticks_df, steamid, event_ticks=list(event_ticks_by_player.get(str(steamid), [])), min_window_len=64
+        )
 
         if not atws:
             continue
@@ -148,9 +138,9 @@ def analyze_demo(demo_path: str, model_path: str = "models/checkpoints/best_mode
         elo_predictions = []
         suspicious_segments = []
 
-        for seg_idx, seg_df in enumerate(atws):
-            feat_df = compute_kinematic_features(seg_df, tick_rate=64.0, extract_tremor=True)
-            raw_array = feat_df[FEATURE_COLS].values.astype(np.float32)
+        for seg_idx, feat_df in enumerate(atws):
+            seg_df = feat_df
+            raw_array= feat_df[FEATURE_COLS].values.astype(np.float32)
             norm_array = normalize_kinematic_features(raw_array, FEATURE_COLS, global_mean=global_mean, global_std=global_std)
             input_tensor = torch.tensor(norm_array, dtype=torch.float32).unsqueeze(0).to(device)
 

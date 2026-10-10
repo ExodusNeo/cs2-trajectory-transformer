@@ -47,6 +47,8 @@ def sample_parquet_dir():
                     'trajectory_curvature': np.random.uniform(0, 10, n_ticks),
                     'curvature_entropy': np.random.uniform(1.0, 3.0, n_ticks),
                     'tremor_power_8_12hz': np.random.uniform(0.1, 0.8, n_ticks),
+                    'aim_error': np.random.uniform(0.0, 3.14, n_ticks),
+                    'aim_error_rate': np.random.normal(0.0, 1.0, n_ticks),
                     'match_id': match_id,
                     'steamid': p,
                     'segment_id': seg,
@@ -146,7 +148,7 @@ def test_zero_data_leakage_matches_and_players_clusters():
                 df = pd.DataFrame({
                     'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
                     'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
-                    'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+                    'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32, 'aim_error': [3.14159]*32, 'aim_error_rate': [0.0]*32,
                     'match_id': m_id, 'steamid': p, 'segment_id': 0, 'is_aimbot': 0, 'player_elo': 1500.0
                 })
                 df.to_parquet(os.path.join(temp_dir, f"{m_id}_p{p}_seg0.parquet"), index=False)
@@ -209,7 +211,7 @@ def test_stratified_cluster_partitioning_minority_cheaters(tmp_path):
         df = pd.DataFrame({
             'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
             'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
-            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32, 'aim_error': [3.14159]*32, 'aim_error_rate': [0.0]*32,
             'match_id': m_id, 'steamid': p_id, 'segment_id': 0, 'is_aimbot': 0, 'player_elo': 1500.0
         })
         df.to_parquet(str(tmp_path / f"{m_id}_p{p_id}_seg0.parquet"), index=False)
@@ -221,7 +223,7 @@ def test_stratified_cluster_partitioning_minority_cheaters(tmp_path):
         df = pd.DataFrame({
             'yaw': [0.0]*32, 'pitch': [0.0]*32, 'angular_velocity': [0.0]*32,
             'angular_accel': [0.0]*32, 'angular_jerk': [0.0]*32, 'trajectory_curvature': [0.0]*32,
-            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32,
+            'curvature_entropy': [0.0]*32, 'tremor_power_8_12hz': [0.0]*32, 'aim_error': [3.14159]*32, 'aim_error_rate': [0.0]*32,
             'match_id': m_id, 'steamid': p_id, 'segment_id': 0, 'is_aimbot': 1, 'player_elo': 2400.0
         })
         df.to_parquet(str(tmp_path / f"{m_id}_p{p_id}_seg0.parquet"), index=False)
@@ -270,6 +272,8 @@ def _create_synthetic_parquet(tmp_path, match_id: str, player_id: int, is_aimbot
         'trajectory_curvature': [0.0] * 32,
         'curvature_entropy': [0.0] * 32,
         'tremor_power_8_12hz': [0.0] * 32,
+        'aim_error': [3.14159] * 32,
+        'aim_error_rate': [0.0] * 32,
         'match_id': match_id,
         'steamid': player_id,
         'segment_id': 0,

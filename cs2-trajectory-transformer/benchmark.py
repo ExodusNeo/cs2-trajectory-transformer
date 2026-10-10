@@ -19,7 +19,7 @@ from scipy.stats import skew, kurtosis
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 from models.st_transformer import STTrajectoryTransformer
-from models.losses import SupervisedInfoNCELoss, FocalLoss
+from models.losses import SupervisedInfoNCELoss, FocalLoss, masked_smooth_l1_loss
 from models.baselines import BiLSTMBaseline, ClassicalBaselines
 from data.dataset import create_partitioned_dataloaders, FEATURE_COLUMNS
 from evaluate import compute_metrics, evaluate_model_on_loader
@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: torch.device = None):
     """Trains the ST-Trans model with Focal Loss and Supervised InfoNCE."""
     model = STTrajectoryTransformer(
-        feature_dim=8, 
+        feature_dim=len(FEATURE_COLUMNS),
         d_model=128, 
         nhead=8, 
         num_layers=4, 
@@ -41,8 +41,7 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
     
     criterion_aim = FocalLoss(alpha=0.25, gamma=2.0)
     criterion_con = SupervisedInfoNCELoss(temperature=0.07)
-    criterion_elo = nn.SmoothL1Loss()
-    
+
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
     
@@ -59,6 +58,7 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
             mask = batch['attention_mask'].to(device)
             aim_labels = batch['aimbot_labels'].to(device)
             elo_labels = batch['elo_labels'].to(device)
+            elo_mask = batch['elo_mask'].to(device)
             p_ids = batch['player_ids'].to(device)
             
             optimizer.zero_grad()
@@ -66,8 +66,8 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
             
             loss_aim = criterion_aim(aim_prob, aim_labels)
             loss_con = criterion_con(emb, p_ids)
-            loss_elo = criterion_elo(elo_pred, elo_labels)
-            
+            loss_elo = masked_smooth_l1_loss(elo_pred, elo_labels, elo_mask)
+
             # Thesis Reference: Chapter 3, Equation (14) — Multi-Task Composite Loss
             # L_total = lambda_focal * L_aim + lambda_con * L_con + lambda_elo * L_elo
             loss = loss_aim + 0.5 * loss_con + 0.2 * loss_elo
@@ -94,7 +94,7 @@ def train_st_transformer(train_loader, val_loader, epochs: int = 15, device: tor
 
 def train_and_eval_bilstm(train_loader, test_loader, epochs: int = 15, device: torch.device = None):
     """Trains Bi-LSTM baseline (2 layers, hidden_dim=64, 128 bidirectional units per Table 7)."""
-    model = BiLSTMBaseline(feature_dim=8, hidden_dim=64, num_layers=2).to(device)
+    model = BiLSTMBaseline(feature_dim=len(FEATURE_COLUMNS), hidden_dim=64, num_layers=2).to(device)
     criterion = nn.BCELoss()
     optimizer = AdamW(model.parameters(), lr=1e-3)
     
@@ -139,7 +139,7 @@ def train_and_eval_tabular_baselines(train_loader, test_loader):
                 if len(valid) == 0:
                     continue
                 # Thesis Reference: Chapter 3, Section 3.2.8 & Table 7 — Tabular Baselines Formulation
-                # 48 summary statistics across 8 channels: mean, std, max, min, skewness, kurtosis (6 * 8 = 48)
+                # 6 summary statistics per channel: mean, std, max, min, skewness, kurtosis (6 * 9 = 54)
                 f_mean = np.mean(valid, axis=0)
                 f_std = np.std(valid, axis=0)
                 f_max = np.max(valid, axis=0)
@@ -165,18 +165,23 @@ def train_and_eval_tabular_baselines(train_loader, test_loader):
     return results
 
 
-def run_full_benchmark():
-    """Executes full comparative benchmark study and outputs tables and figures."""
+def run_full_benchmark(data_dir: str = "data/processed_parquet", provenance: str = "Real replay corpus"):
+    """
+    Executes full comparative benchmark study and outputs tables and figures.
+
+    provenance is written into every result row. Synthetic data only verifies that the
+    pipeline runs: its generator encodes the hypotheses under test, so its scores are not evidence.
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Running benchmark on device: {device}")
     
-    data_dir = "data/processed_parquet"
     train_loader, val_loader, test_loader = create_partitioned_dataloaders(
         data_dir=data_dir,
         train_ratio=0.70,
         val_ratio=0.15,
         test_ratio=0.15,
-        batch_size=16
+        batch_size=16,
+        samples_per_player=4
     )
     
     # 1. Train & Evaluate ST-Trans
@@ -204,7 +209,7 @@ def run_full_benchmark():
     df_results.insert(0, 'Test_Samples', len(y_test))
     df_results.insert(1, 'Clean_Samples', int(np.sum(y_test == 0)))
     df_results.insert(2, 'Cheater_Samples', int(np.sum(y_test == 1)))
-    df_results['Data_Provenance'] = "Synthetic Pipeline Verification (Phase 2 Prototype)"
+    df_results['Data_Provenance'] = provenance
     
     os.makedirs("reports", exist_ok=True)
     csv_path = "reports/benchmark_summary.csv"
@@ -235,4 +240,11 @@ def run_full_benchmark():
 
 
 if __name__ == "__main__":
-    run_full_benchmark()
+    import argparse
+    ap = argparse.ArgumentParser(description="Run comparative benchmark")
+    ap.add_argument("--data_dir", type=str, default="data/processed_parquet")
+    ap.add_argument("--provenance", type=str, default=None,
+                    help="Label for the Data_Provenance column (defaults to synthetic when data_dir contains 'synthetic')")
+    a = ap.parse_args()
+    prov = a.provenance or ("Synthetic pipeline verification (NOT evidence)" if "synthetic" in a.data_dir.lower() else "Real replay corpus")
+    run_full_benchmark(data_dir=a.data_dir, provenance=prov)

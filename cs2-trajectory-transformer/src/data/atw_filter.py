@@ -1,14 +1,17 @@
 """
 Active Tracking Window (ATW) Extractor Module.
 Filters out passive navigation noise and isolates high-signal combat engagement windows:
-1. Spatial FOV Cone: Enemy player within a 30-degree visual cone and line of sight.
+1. Spatial FOV Cone: Living enemy within a 30-degree visual cone and 3500 units (no occlusion check).
 2. Temporal Event Buffer: Pre/post window around weapon fire and damage events (+/- 64 ticks).
-3. Window Merging & Duration Pruning: Merges adjacent triggers and drops micro-fragments (< 32 ticks).
+3. Window Merging & Duration Pruning: Merges adjacent triggers and drops fragments shorter than
+   L_min = 64 ticks (1.0 s), the length of one tremor FFT window.
 """
 
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Optional
+
+from features.kinematics import view_target_angles_rad
 
 
 def calculate_relative_angle(
@@ -18,37 +21,19 @@ def calculate_relative_angle(
     target_pos: np.ndarray
 ) -> float:
     """
-    Computes angular deviation (in degrees) between the player's 3D look vector and target position.
-    
-    CS2 Coordinate System:
-    - Yaw: 0 deg = +X axis, 90 deg = +Y axis, 180/-180 = -X axis, -90 = -Y axis.
-    - Pitch: -89 deg (looking straight up) to +89 deg (looking straight down) or standard spherical.
+    Angular deviation (degrees) between the player's look vector and a target position.
+
+    Thesis Reference: Chapter 3, Equation (3). CS2 convention: yaw 0 deg = +X, 90 deg = +Y;
+    positive pitch looks down (+Z is up in world space).
     """
-    # Relative position vector from player to target
-    rel_vec = target_pos - player_pos
-    dist = np.linalg.norm(rel_vec)
-    if dist < 1e-6:
+    player_pos = np.asarray(player_pos, dtype=np.float64)
+    target_pos = np.asarray(target_pos, dtype=np.float64)
+    if np.linalg.norm(target_pos - player_pos) < 1e-6:
         return 0.0
-        
-    rel_unit = rel_vec / dist
-    
-    # Player 3D sight unit vector from pitch and yaw
-    pitch_rad = np.radians(pitch_deg)
-    yaw_rad = np.radians(yaw_deg)
-    
-    # In CS2, forward direction:
-    vx = np.cos(pitch_rad) * np.cos(yaw_rad)
-    vy = np.cos(pitch_rad) * np.sin(yaw_rad)
-    vz = -np.sin(pitch_rad)  # CS2 positive pitch looks down (+Z is up in world space)
-    
-    look_vec = np.array([vx, vy, vz], dtype=np.float64)
-    look_norm = np.linalg.norm(look_vec)
-    if look_norm > 1e-6:
-        look_vec /= look_norm
-        
-    dot_product = np.clip(np.dot(look_vec, rel_unit), -1.0, 1.0)
-    angle_rad = np.arccos(dot_product)
-    return float(np.degrees(angle_rad))
+    angle = view_target_angles_rad(
+        player_pos[None, :], np.array([pitch_deg]), np.array([yaw_deg]), target_pos[None, :]
+    )
+    return float(np.degrees(angle[0]))
 
 
 def find_fov_encounters(
@@ -58,10 +43,13 @@ def find_fov_encounters(
     max_distance: float = 3500.0
 ) -> List[Tuple[int, int]]:
     """
-    Scans aligned player and enemy telemetry to find continuous tick ranges where
-    the enemy is within the player's FOV cone and maximum engagement distance.
+    Finds contiguous tick ranges where one enemy is inside the player's FOV cone and range.
+
+    Vectorized over ticks. Dead enemies are ignored when an 'is_alive' column is present.
+    Returns inclusive (start_tick, end_tick) pairs.
     """
-    # Merge on tick
+    if 'is_alive' in enemy_df.columns:
+        enemy_df = enemy_df[enemy_df['is_alive'].astype(bool)]
     merged = pd.merge(
         player_df[['tick', 'X', 'Y', 'Z', 'pitch', 'yaw']],
         enemy_df[['tick', 'X', 'Y', 'Z']],
@@ -72,39 +60,23 @@ def find_fov_encounters(
     if merged.empty:
         return []
         
-    p_pos = merged[['X_p', 'Y_p', 'Z_p']].values
-    e_pos = merged[['X_e', 'Y_e', 'Z_e']].values
-    pitches = merged['pitch'].values
-    yaws = merged['yaw'].values
-    ticks = merged['tick'].values
+    p_pos = merged[['X_p', 'Y_p', 'Z_p']].to_numpy(dtype=np.float64)
+    e_pos = merged[['X_e', 'Y_e', 'Z_e']].to_numpy(dtype=np.float64)
+    ticks = merged['tick'].to_numpy()
     
-    in_fov_mask = np.zeros(len(merged), dtype=bool)
-    
-    for i in range(len(merged)):
-        dist = np.linalg.norm(e_pos[i] - p_pos[i])
-        if dist <= max_distance:
-            angle = calculate_relative_angle(p_pos[i], pitches[i], yaws[i], e_pos[i])
-            if angle <= fov_threshold_deg:
-                in_fov_mask[i] = True
-                
-    # Extract continuous tick intervals where in_fov_mask is True
-    windows = []
-    in_window = False
-    start_tick = None
-    
-    for i in range(len(in_fov_mask)):
-        if in_fov_mask[i] and not in_window:
-            in_window = True
-            start_tick = ticks[i]
-        elif not in_fov_mask[i] and in_window:
-            in_window = False
-            end_tick = ticks[i - 1]
-            windows.append((int(start_tick), int(end_tick)))
-            
-    if in_window:
-        windows.append((int(start_tick), int(ticks[-1])))
-        
-    return windows
+    dist = np.linalg.norm(e_pos - p_pos, axis=-1)
+    angles_deg = np.degrees(view_target_angles_rad(
+        p_pos, merged['pitch'].to_numpy(), merged['yaw'].to_numpy(), e_pos
+    ))
+    in_fov = (dist > 1.0) & (dist <= max_distance) & (angles_deg <= fov_threshold_deg)
+    if not in_fov.any():
+        return []
+
+    # Run boundaries: a run breaks when the mask flips or the tick sequence has a gap.
+    idx = np.flatnonzero(in_fov)
+    breaks = np.flatnonzero((np.diff(idx) != 1) | (np.diff(ticks[idx]) != 1)) + 1
+    runs = np.split(idx, breaks)
+    return [(int(ticks[r[0]]), int(ticks[r[-1]])) for r in runs]
 
 
 def find_combat_event_windows(
@@ -160,13 +132,13 @@ def extract_active_tracking_windows(
     event_ticks: Optional[List[int]] = None, 
     fov_deg: float = 30.0, 
     tick_buffer: int = 64, 
-    min_window_len: int = 32,
+    min_window_len: int = 64,
     max_window_len: int = 512
 ) -> List[pd.DataFrame]:
     """
     High-level extractor: combines FOV encounters and combat event buffers to slice
     player telemetry into Active Tracking Window (ATW) DataFrame segments.
-    Enforces minimum length L_min (32 ticks) and maximum duration cap L_max (512 ticks).
+    Enforces minimum length L_min (64 ticks = 1.0 s, one full FFT window) and cap L_max (512 ticks).
     """
     raw_windows = []
     

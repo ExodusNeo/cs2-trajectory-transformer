@@ -16,7 +16,7 @@ import numpy as np
 
 class BiLSTMBaseline(nn.Module):
     """Bidirectional LSTM baseline for sequential trajectory classification."""
-    def __init__(self, feature_dim: int = 8, hidden_dim: int = 64, num_layers: int = 2):
+    def __init__(self, feature_dim: int = 9, hidden_dim: int = 64, num_layers: int = 2):
         super().__init__()
         self.lstm = nn.LSTM(
             input_size=feature_dim,
@@ -47,9 +47,9 @@ class BiLSTMBaseline(nn.Module):
 class TabularMLP(nn.Module):
     """
     Thesis Reference: Chapter 3, Section 3.2.8 & Table 28 — Multi-Layer Perceptron Baseline
-    Architecture: Linear(48 -> 128) -> ReLU -> Dropout(0.2) -> Linear(128 -> 64) -> ReLU -> Linear(64 -> 1) -> Sigmoid
+    Architecture: Linear(6 * n_channels -> 128) (54 for the 9-channel set) -> ReLU -> Dropout(0.2) -> Linear(128 -> 64) -> ReLU -> Linear(64 -> 1) -> Sigmoid
     """
-    def __init__(self, input_dim: int = 48, hidden_dim1: int = 128, hidden_dim2: int = 64, dropout: float = 0.2):
+    def __init__(self, input_dim: int = 54, hidden_dim1: int = 128, hidden_dim2: int = 64, dropout: float = 0.2):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim1),

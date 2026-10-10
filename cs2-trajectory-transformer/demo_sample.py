@@ -13,7 +13,7 @@ import torch
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from typing import Optional
-from features.kinematics import compute_kinematic_features
+from features.kinematics import MODEL_FEATURE_COLUMNS, compute_kinematic_features
 from models.st_transformer import STTrajectoryTransformer
 from data.dataset import normalize_kinematic_features, load_scaler_stats
 from generate_benchmark_dataset import generate_human_trajectory, generate_cheater_trajectory
@@ -45,10 +45,7 @@ def main():
     print("  CS2 TRAJECTORY TRANSFORMER // LIVE DUAL-HEAD INFERENCE DEMO")
     print("=" * 75)
     
-    feature_cols = [
-        'yaw', 'pitch', 'angular_velocity', 'angular_accel', 
-        'angular_jerk', 'trajectory_curvature', 'curvature_entropy', 'tremor_power_8_12hz'
-    ]
+    feature_cols = MODEL_FEATURE_COLUMNS
     
     # 1. Instantiate ST-Trans Architecture (Aligns with Chapter 3 Table 6)
     model = STTrajectoryTransformer(
@@ -117,7 +114,7 @@ def main():
     
     # 2. Test Case A: Organic Human Player (Faceit Pro - 2600 ELO with 8-12Hz Hand Tremor)
     print("\n" + "-" * 75)
-    print("  [TEST 1] SIMULATING ORGANIC HUMAN AIM (Faceit Level 10 Pro / ~2600 ELO)")
+    print("  [TEST 1] SYNTHETIC HUMAN-LIKE TRAJECTORY (generator output, not real data)")
     print("-" * 75)
     human_df = generate_human_trajectory(n_ticks=256, elo=2600.0, tick_rate=64.0)
     input_human = preprocess_df(human_df, feature_cols, global_mean=global_mean, global_std=global_std)
@@ -132,7 +129,7 @@ def main():
 
     # 3. Test Case B: Hardware / Scripted Aimbot (Instant Snap + Zero Tremor)
     print("\n" + "-" * 75)
-    print("  [TEST 2] SIMULATING ALGORITHMIC HARDWARE SNAP AIMBOT (DMA Exploit)")
+    print("  [TEST 2] SYNTHETIC SNAP-AIMBOT TRAJECTORY (generator output, not real data)")
     print("-" * 75)
     cheat_df = generate_cheater_trajectory(n_ticks=256, cheat_type='snap', tick_rate=64.0)
     input_cheat = preprocess_df(cheat_df, feature_cols, global_mean=global_mean, global_std=global_std)
@@ -147,7 +144,7 @@ def main():
     print(f"  > Predicted Player Skill ELO:   {elo_pred_c.item() * 2000:.0f} ELO (Suspicious Anomaly)")
 
     print("\n" + "=" * 75)
-    print("  Inference Verification Complete! ST-Trans cleanly separates human from aimbot.")
+    print("  Inference pipeline verified on synthetic inputs (smoke test, not a detection result).")
     print("=" * 75)
 
 

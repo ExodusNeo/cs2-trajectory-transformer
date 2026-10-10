@@ -17,14 +17,15 @@
 2. **Evasion of Coarse Server Heuristics:** Existing server heuristics rely on aggregate post-match metrics (K/D ratio, headshot percentage). Humanized, low-FOV aimbots easily bypass these by applying subtle micro-corrections solely during decisive 200ms flick moments.
 3. **Smurfing and Matchmaking Degradation:** Rank spoofing ruins competitive fairness, but competitive matchmaking engines lack continuous biometric skill profilers capable of evaluating a player's true motor proficiency from fine-grained kinematic execution.
 
-### 1.2 The Solution & Biomechanical Invariants
-The human motor system is governed by immutable biological and neuromuscular constraints:
-- **Flash & Hogan Minimum Jerk Optimization:** Biological motor control plans trajectories that minimize the third time derivative of position ($\int j(t)^2 dt$), generating bell-shaped velocity curves and continuous acceleration. Algorithmic aimbots display instantaneous torque changes and extreme jerk spikes.
-- **8–12 Hz Physiological Hand Tremor:** Involuntary motor-unit firing causes a natural micro-tremor in the $8.0\text{--}12.0\text{ Hz}$ frequency band. Legitimate human aiming exhibits significant power in this band ($15\%\text{--}45\%$ of active motor spectrum). Aimbots either completely lack this resonance ($\text{TBP} < 2\%$) or inject artificial Gaussian noise without biological phase coherence.
-- **Spherical Geodesic Curvature ($\kappa_t$):** Gaze trajectories operate on a spherical surface $S^2$, not Euclidean 2D space. Curvature is computed via 3D sight-line vector cross products.
-- **Shortest-Path Euler Angle Wrapping:** View angles across coordinate boundaries ($\pm 180^\circ$) must be wrapped to $[-\pi, \pi]$ to prevent false $358^\circ$ coordinate jump spikes.
+### 1.2 The Solution & Candidate Biomechanical Features
+These are **hypotheses tested by ablation**, not invariants. Write them as hypotheses in code, docs and the manuscript (see the `cs2-trajectory-transformer` skill, Section 3):
+- **Flash & Hogan Minimum Jerk (smoothness proxy):** Voluntary reaching tends to minimize $\int \|\dddot{x}\|^2 dt$ (bell-shaped speed). We use the speed-derived scalar $j_t = d^2\omega_t/dt^2$ as a proxy. A humanized aimbot can emit minimum-jerk profiles (our own synthetic generator does), so jerk alone cannot separate them.
+- **8–12 Hz Tremor Band Power (weak on real data):** Physiological tremor is real, but on the first real FACEIT demo small view-angle steps are single mouse counts (0.022° × sens), >50% of live ticks show no motion, and real-player TBP (median 0.023) is *below* white noise (0.16). The old "humans 15–45%, aimbots < 2%" claim is unsupported. Compute TBP on signed rates, never on $|\omega_t|$; verify with `probe_replay_signal.py`.
+- **Spherical Geodesic Curvature ($\kappa_g$):** Computed intrinsically on $S^2$. Great circles have $\kappa_g = 0$, but a horizontal mouse swipe traces a circle of latitude with $\kappa_g = |\tan p|$, so "humans follow geodesics" is false; treat as an empirical channel.
+- **Shortest-Path Euler Angle Wrapping:** View angles across coordinate boundaries ($\pm 180^\circ$) must be wrapped to $[-\pi, \pi]$ to prevent false $358^\circ$ jump spikes.
+- **Target-Relative Aim Error (Fitts-style acquisition):** `aim_error` = angle from crosshair to the nearest living enemy head; `aim_error_rate` its derivative. Aim assistance acts on this relationship, which self-kinematics cannot see. Opponents are resolved **per tick** (teams swap at halftime).
 - **Spatial-Temporal Trajectory Transformer (ST-Trans):** A dual-head deep transformer architecture combining:
-  - **Head A (Aimbot Classification):** Trained with Binary Focal Loss ($\alpha=0.25, \gamma=2.0$) to overcome the extreme class imbalance ($< 1\%$ cheater windows).
+  - **Head A (Aimbot Classification):** Binary Focal Loss ($\alpha=0.25, \gamma=2.0$). Labels are **account-level weak labels** ("account later banned for cheating"), not per-window ground truth; report player-match session metrics as primary.
   - **Head B (Smurf Biometric Embedding):** 32-dimensional unit-normalized embedding trained with Supervised InfoNCE Contrastive Loss ($\tau=0.07$) + auxiliary continuous ELO regression head with Smooth L1 loss.
 
 ---
@@ -46,13 +47,15 @@ cs2-trajectory-transformer/
 ├── train.py                                <- ST-Trans training pipeline (AdamW + Cosine Annealing)
 ├── evaluate.py                             <- Comprehensive evaluation (AUROC, AUPRC, FPR@95%TPR, ELO MAE)
 ├── benchmark.py                            <- Comparative benchmark suite (Random Forest, XGBoost, MLP, BiLSTM)
-├── generate_benchmark_dataset.py           <- High-fidelity synthetic trajectory generator
+├── generate_benchmark_dataset.py           <- Synthetic PIPELINE-VERIFICATION generator (writes syn_* to data/synthetic_parquet; not evidence)
 ├── inspect_checkpoint.py                   <- Weight inspection utility for saved PyTorch checkpoints
+├── probe_replay_signal.py                  <- Empirical probe: mouse-count quantization & tremor-band signal vs white noise
+├── ablation.py                             <- Feature ablation (central RQ: engineered vs raw-angle inputs)
 ├── visualize.py                            <- Publication-ready ROC/PR curves & t-SNE latent cluster visualizer
 │
 ├── src/                                    <- Core Python package source modules
 │   ├── features/
-│   │   └── kinematics.py                   <- Biomechanical feature engine (Wrapping, Velocity, Jerk, Curvature, Tremor)
+│   │   └── kinematics.py                   <- Feature engine + MODEL_FEATURE_COLUMNS (single source of truth, 9 channels)
 │   ├── models/
 │   │   ├── st_transformer.py               <- PyTorch Spatial-Temporal Trajectory Transformer (ST-Trans)
 │   │   ├── losses.py                       <- Supervised InfoNCE Loss & Binary Focal Loss
@@ -60,21 +63,23 @@ cs2-trajectory-transformer/
 │   └── data/
 │       ├── demo_parser.py                  <- High-speed CS2 replay parser wrapping demoparser2
 │       ├── atw_filter.py                   <- Active Tracking Window (ATW) spatial-temporal extractor
-│       ├── dataset.py                      <- Zero-leakage PyTorch Dataset & batch collator
+│       ├── dataset.py                      <- Zero-leakage partitioning (components / match_drop), P×K sampler, collator
 │       ├── demo_downloader.py              <- FACEIT API polite scraper & archive decompressor
-│       └── batch_processor.py              <- Multiprocessing ATW Parquet extraction pipeline
+│       └── batch_processor.py              <- extract_player_feature_windows (shared by ingestion & analyze_match) + Parquet export
 │
-├── tests/                                  <- Pytest automated test suite (26/26 verified passing)
+├── tests/                                  <- Pytest suite (71/71 passing on 2026-10-10)
 │   ├── test_kinematics.py                  <- Euler wrapping, curvature, & tremor PSD unit tests
 │   ├── test_model.py                       <- ST-Trans forward pass, masks, & loss function tests
 │   ├── test_dataset.py                     <- Zero data leakage splits & batch collation tests
 │   ├── test_parser.py                      <- ATW geometry & demoparser2 integration tests
 │   ├── test_downloader.py                  <- Download, decompression, & rate limit backoff tests
-│   └── test_baselines.py                   <- Baseline model architectures & inference tests
+│   ├── test_baselines.py                   <- Baseline model architectures & inference tests
+│   └── test_feature_contract_and_splits.py <- Feature contract, TBP, aim error, halftime swap, P×K, match_drop, ELO mask
 │
 ├── data/                                   <- Local and external data directories
 │   ├── raw_demos/                          <- Downloaded .dem replays (clean/ & cheaters/)
-│   └── processed_parquet/                  <- Extracted 8D ATW Parquet feature files
+│   ├── processed_parquet/                  <- Real ATW Parquet files (9 model channels + yaw + metadata)
+│   └── synthetic_parquet/                  <- Synthetic syn_* windows (never mix into processed_parquet)
 │
 ├── models/checkpoints/                     <- Saved PyTorch model checkpoint weights (best_model.pt)
 └── reports/                                <- Generated figures (roc_pr_curve.png, tsne_latent_space.png)
@@ -114,12 +119,12 @@ All code contributions MUST adhere strictly to the following standards:
 1. **Vectorization Over Python Loops:** Never iterate over simulation ticks with `for i in range(len(ticks))`. Use vectorized NumPy, SciPy, or PyTorch tensor operations.
 2. **Defensive Numerical Stability:**
    - Always add small numerical epsilons to division denominators: `denom = denom + 1e-6` or `1e-9`.
-   - Before taking `arccos(dot_product)`, strictly clamp the dot product to the valid range: `np.clip(dot, -1.0, 1.0)` or `torch.clamp(dot, -1.0, 1.0)`.
+   - Before taking `arccos(dot_product)`, strictly clamp the dot product to `[-1, 1]`. For small angles (aim error) prefer `arctan2(||a x b||, a . b)`, which stays accurate near 0 where `arccos` loses ~1e-6 rad.
    - In probability functions, clamp inputs away from $0$ and $1$ to prevent `log(0)` / `NaN`: `inputs.clamp(min=1e-6, max=1.0 - 1e-6)`.
 3. **Euler Coordinate Wrapping:** Any numerical differentiation on camera yaw or pitch must pass through `wrap_angle_rad(d_angle)` using `((d_angle + np.pi) % (2.0 * np.pi)) - np.pi`.
 
 ### 4.2 PyTorch Deep Learning Best Practices
-1. **Mask-Aware Pooling:** Sequence lengths in ATWs vary ($32 \le L \le 512$). All temporal pooling over transformer representations MUST multiply by the attention mask and normalize by valid sequence length:
+1. **Mask-Aware Pooling:** Sequence lengths in ATWs vary ($64 \le L \le 512$). All temporal pooling over transformer representations MUST multiply by the attention mask and normalize by valid sequence length:
    ```python
    mask_expanded = attention_mask.unsqueeze(-1).float()
    pooled = (encoded * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1.0)
@@ -208,13 +213,23 @@ The following table documents the audited alignment between the approved thesis 
 | **31** | **Fail-Closed Test Split Quota Audit & Minority Class Cluster Stratification** | If data could not be partitioned, audit caught error and fell back to overall corpus count, falsely reporting `quota_met=True` and allowing crawl loop to terminate without auditing test split; splitter previously only stratified when both classes had $\ge 3$ clusters, otherwise using unstratified split that dropped minority cheaters from test set. | `audit_clean_atw_quota` in `batch_processor.py` now strictly fails closed (`quota_met=False`, `clean_count=0`, records `partition_error`) when `partition_test_split=True` and partitioning fails; `crawl_replays.py` terminates with `sys.exit(1)` and explicit error diagnostics if test split is unavailable or quota unmet; `partition_dataset_files` in `dataset.py` always stratifies clean and cheater clusters independently whenever both classes exist (guaranteeing both classes in train and test when $\ge 2$ clusters per class exist); updated proposal manuscript (Sec 3.2.2, 3.2.7, 3.2.9). | 🟢 **Resolved (2026-10-09):** Fail-closed test split stopping condition and robust minority-class cluster stratification enforced with unit tests (36/36 passing). |
 | **32** | **Empty-Validation Edge Case & Component Feasibility Enforcement** | When exactly 2 connected components existed in each class ($C=2, X=2$), partitioning assigned 1 to train and 1 to test for each class, silently leaving validation empty (`val_files=[]`) and breaking training/threshold calibration; legacy match-fallback previously broke connected components by filtering players across matches. | Refactored `partition_dataset_files` in `dataset.py` to preserve connected component integrity; eliminated component-breaking fallbacks; strictly guarantees non-empty partitions with both classes in Train and held-out Test when $C \ge 2, X \ge 2, C+X \ge 5$; raises descriptive `ValueError` listing clean and cheater counts when component counts make valid non-empty partitions infeasible (e.g. $C=2, X=2$ or single-class $N < 3$); reports actual split sizes and cluster allocations (approximating 80/10/10); added unit tests (42/42 passing). | 🟢 **Resolved (2026-10-09):** Empty-validation edge case fixed, component feasibility enforced, zero-leakage strictly preserved. |
 | **33** | **Validation Operating Threshold Calibration Data Requirements & Split Boundary Behavior** | Proposal Sec 3.2.7/3.2.9 and tracker previously overstated when both classes are guaranteed in every split; `calibrate_operating_threshold` returned 0.5 on single-class validation or used percentiles vulnerable to ties where `score >= tau` exceeded target FPR; split-ratio was claimed by ATW weight rather than component count; and 30,000-window quota conflated sample size with empirical confidence bounds. | Refactored `calibrate_operating_threshold` in `evaluate.py` to evaluate candidates under the `score >= tau` rule accounting for ties; calculates actual validation FPR and marks calibration successful only if empirical rate meets target (marking unmet if scores equal 1.0 or ties exceed allowed FPs); keeps empirical calibration separate from statistical evidence by reporting observed FP count, clean sample count, and 95% upper confidence bounds (using the Rule-of-Three approximation for zero false positives and Clopper-Pearson bounds for nonzero counts); keeps validation TPR unavailable on clean-only splits; updated proposal Sec 3.2.7 (P315 conditional calibration, P316 component-count allocation) and Sec 3.2.9 (P331 distinguishing 30,000 clean test stopping condition from observed zero-FP result); added unit tests for tied scores, threshold equal to max score, scores at 1.0, and unachievable targets (50/50 tests passing). | 🟢 **Resolved (2026-10-09):** Tie-aware FPR calibration enforced, statistical evidence separated, component-count allocation aligned, and 30,000-window bound clarified. |
+| **34** | **Tremor on Signed Rates & $L_{\min}$** | Eq (11) TBP over 8–12 Hz / 1–30 Hz with 1 Hz bins (64-tick FFT). | TBP on signed rates (not rectified $|\omega|$, which doubles frequency); vectorized; $L_{\min}$ = 64 ticks so every ATW holds one full FFT window. | 🟢 **Resolved (2026-10-10 code, 2026-10-11 manuscript Table 4 / Sec 3.2.3–3.2.4).** |
+| **35** | **Tremor Premise vs Real Data** | Sec 2.3.3/3.2.4 assert human 8–12 Hz resonance. | `probe_replay_signal.py`: real TBP median 0.023 < white noise 0.16; count-quantized angles. | 🟡 **Manuscript reframed (2026-10-11);** report probe results on the full corpus in Chapter 4. |
+| **36** | **Target-Relative Channels; No Absolute Yaw** | Table 5 lists 8 self-kinematic channels incl. absolute yaw; Fitts' Law in theory but not in features. | `MODEL_FEATURE_COLUMNS` = 9: pitch, ω, α, j, κ_g, S_c, TBP, aim_error, aim_error_rate. Yaw kept in Parquet for the raw baseline only. | 🟢 **Resolved (2026-10-11):** Tables 5, 6, 7, IPO table and Sec 3.2.4/3.2.5/3.2.8 updated (no new equation number added; aim error is defined in Sec 3.2.4 text). |
+| **37** | **Halftime Side-Swap Enemy Bug** | — | Opponents resolved per tick; zero-distance targets excluded. Real demo ATW rows 1.52M → 0.83M. | 🟢 **Resolved (2026-10-10).** Older real-data audits are invalid. |
+| **38** | **Shared Preprocessing (no train/inference skew)** | Same pipeline for training and server-side audit. | `extract_player_feature_windows` used by `batch_processor.py` and `analyze_match.py`. | 🟢 **Resolved (2026-10-10).** |
+| **39** | **InfoNCE Positive Pairs** | Eq (17) requires same-player positives per batch. | `PlayerBalancedBatchSampler` (P×K), `--samples_per_player 4`. | 🟢 **Resolved (2026-10-10).** |
+| **40** | **Giant-Component Partitioning** | Sec 3.2.7 assumes hundreds of independent components. | Size-aware allocation (largest component → train); `strategy="auto"` falls back to leakage-free `match_drop`. | 🟢 **Resolved (2026-10-11):** Sec 3.2.7 describes size-aware allocation and the match-level fallback. |
+| **41** | **Weak Labels, Masked ELO, Ban Regex** | Labels as ground truth; ELO from API. | Account-level weak labels documented; unknown ELO masked (no 1500 default); `is_cheating_ban_reason` word-boundary regex. | 🟢 **Resolved (2026-10-11):** Sec 1.4 and 3.2.2 state account-level weak labels and within-match negatives; Sec 3.2.6/3.2.9 state ELO masking. Open: confirm whether FACEIT ELO is at match time. |
+| **42** | **Synthetic Data Integrity** | Synthetic suite as stress test only. | Generator isolated to `data/synthetic_parquet`, adds quantization, moving targets and a humanized aimbot; reports tagged with provenance. Synthetic scores are never evidence. | 🟢 **Resolved (2026-10-10).** Old `reports/*.csv` are synthetic. |
+| **43** | **Promised but Unimplemented** | CS2CD integration, AntiCheatPT baseline, ONNX export, HID/Bézier synthetic suite. | Not present in code. CS2CD confirmed as Parquet + JSON (adapter needed); ONNX now described as planned in Sec 3.2.9. | 🔴 **Open:** CS2CD adapter, AntiCheatPT reproduction, ONNX export, HID/Bézier synthetic suite. |
 
 ---
 
 ## 🔄 7. Protocol for Starting a New Conversation
 
 When starting work in a new conversation:
-1. **Orient Immediately:** Read `AGENTS.md` and check [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) for current phase and completed milestones.
+1. **Orient Immediately:** Read `AGENTS.md` and check [`THESIS_TRACKER.md`](file:///C:/Users/ddgut/OneDrive/Desktop/cs2-trajectory-transformer/cs2-trajectory-transformer/THESIS_TRACKER.md) for current phase and completed milestones. Then load the project skill `.agents/skills/cs2-trajectory-transformer/SKILL.md` (Claude Code: `/cs2-trajectory-transformer`), which holds the coding logic rules and decision checklists.
 2. **Preserve Documentation Integrity:** Whenever modifying or adding any code, update `THESIS_TRACKER.md` immediately. Never leave code undocumented.
 3. **Verify Before and After:** Run `pytest tests/` before making changes to confirm baseline functionality, and run `pytest tests/` after changes to ensure zero regressions.
 4. **Adhere to Mathematical Notation:** Use the symbols and equations defined in Chapter 3 ($\omega_t, \alpha_t, j_t, \kappa_t, S_c, \text{TBP}, \mathcal{L}_{\text{total}}$).

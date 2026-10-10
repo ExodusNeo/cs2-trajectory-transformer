@@ -1,13 +1,19 @@
 """
 Feature Ablation Study Pipeline for Spatial-Temporal Trajectory Transformer (ST-Trans).
 
-Evaluates the empirical contribution of each biomechanical invariant:
-1. Full Model (8 Features: yaw, pitch, vel, accel, jerk, curvature, tortuosity, tremor)
-2. Ablation A: w/o 8-12 Hz Tremor PSD (Tests neuromuscular micro-tremor invariant)
-3. Ablation B: w/o Angular Jerk (Tests Flash & Hogan minimum-jerk optimization)
-4. Ablation C: w/o Spherical Curvature & Tortuosity (Tests spherical S^2 geodesic geometry)
-5. Ablation D: Kinematics Only (Tests coordinate invariance: no raw yaw/pitch)
-6. Ablation E: Raw Coordinates Only (Tests baseline transformer with zero biomechanical features)
+Answers the central research question: do physics-informed and target-relative channels
+improve leakage-free cheat detection over a transformer fed only raw view angles?
+
+Configurations (identical architecture, split and seed):
+1. Full model (9 channels, features.kinematics.MODEL_FEATURE_COLUMNS)
+2. w/o tremor band power
+3. w/o speed-derived jerk
+4. w/o geodesic curvature & curvature entropy
+5. w/o target-relative channels (self-kinematics only)
+6. Target-relative only (aim error + rate)
+7. Raw angles only (yaw, pitch): a raw-input baseline in the spirit of AntiCheatPT
+
+A negative result (e.g. tremor adds nothing on real data) is a valid finding: report it.
 
 Outputs:
 - reports/ablation_study_summary.csv
@@ -31,7 +37,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from models.st_transformer import STTrajectoryTransformer
-from models.losses import SupervisedInfoNCELoss, FocalLoss
+from models.losses import SupervisedInfoNCELoss, FocalLoss, masked_smooth_l1_loss
 from data.dataset import create_partitioned_dataloaders, FEATURE_COLUMNS
 from evaluate import evaluate_model_on_loader, compute_metrics
 
@@ -42,46 +48,38 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 # Thesis Reference: Chapter 3, Table 5 & Section 3.2.4 — Feature Space
 # Definition of ablation configurations targeting specific biomechanical invariants
 # ==============================================================================
+def _without(*drop: str) -> List[str]:
+    return [c for c in FEATURE_COLUMNS if c not in drop]
+
+
 ABLATION_CONFIGS = {
-    'Full ST-Trans (8 Channels)': {
-        'features': [
-            'yaw', 'pitch', 'angular_velocity', 'angular_accel',
-            'angular_jerk', 'trajectory_curvature', 'curvature_entropy',
-            'tremor_power_8_12hz'
-        ],
-        'hypothesis': 'Complete model with all biomechanical & spherical invariants'
+    'Full ST-Trans (9 channels)': {
+        'features': list(FEATURE_COLUMNS),
+        'hypothesis': 'All candidate kinematic + target-relative channels'
     },
-    'w/o 8-12 Hz Tremor PSD (7 Channels)': {
-        'features': [
-            'yaw', 'pitch', 'angular_velocity', 'angular_accel',
-            'angular_jerk', 'trajectory_curvature', 'curvature_entropy'
-        ],
-        'hypothesis': 'Ablate neuromuscular tremor invariant (Eq 10)'
+    'w/o tremor band power': {
+        'features': _without('tremor_power_8_12hz'),
+        'hypothesis': 'Does 8-12 Hz band power add signal on count-quantized 64 Hz angles? (Eq 11)'
     },
-    'w/o Minimum Jerk (7 Channels)': {
-        'features': [
-            'yaw', 'pitch', 'angular_velocity', 'angular_accel',
-            'trajectory_curvature', 'curvature_entropy', 'tremor_power_8_12hz'
-        ],
-        'hypothesis': 'Ablate Flash & Hogan third-derivative smoothness invariant (Eq 7)'
+    'w/o speed-derived jerk': {
+        'features': _without('angular_jerk'),
+        'hypothesis': 'Contribution of the minimum-jerk smoothness proxy (Eq 7)'
     },
-    'w/o Curvature & Tortuosity (6 Channels)': {
-        'features': [
-            'yaw', 'pitch', 'angular_velocity', 'angular_accel',
-            'angular_jerk', 'tremor_power_8_12hz'
-        ],
-        'hypothesis': 'Ablate S^2 spherical geodesic manifold curvature & arc ratio (Eq 8, 9)'
+    'w/o curvature & entropy': {
+        'features': _without('trajectory_curvature', 'curvature_entropy'),
+        'hypothesis': 'Contribution of geodesic curvature and its entropy (Eq 9, 10)'
     },
-    'Kinematics Only (6 Channels)': {
-        'features': [
-            'angular_velocity', 'angular_accel', 'angular_jerk',
-            'trajectory_curvature', 'curvature_entropy', 'tremor_power_8_12hz'
-        ],
-        'hypothesis': 'Coordinate-invariant dynamics (zero map-positional bias)'
+    'w/o target-relative channels': {
+        'features': _without('aim_error', 'aim_error_rate'),
+        'hypothesis': 'Self-kinematics only: can motion shape alone expose aim assistance?'
     },
-    'Raw Coordinates Only (2 Channels)': {
+    'Target-relative only': {
+        'features': ['aim_error', 'aim_error_rate'],
+        'hypothesis': 'Crosshair-to-enemy relationship alone (Fitts-style acquisition)'
+    },
+    'Raw angles only (yaw, pitch)': {
         'features': ['yaw', 'pitch'],
-        'hypothesis': 'Unengineered transformer baseline without biomechanics'
+        'hypothesis': 'Raw-input transformer baseline without engineered channels'
     }
 }
 
@@ -111,7 +109,6 @@ def train_ablation_model(
     # Thesis Reference: Chapter 3, Equation (16) & (17) — Focal & InfoNCE Losses
     criterion_aim = FocalLoss(alpha=0.25, gamma=2.0)
     criterion_con = SupervisedInfoNCELoss(temperature=0.07)
-    criterion_elo = nn.SmoothL1Loss()
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
@@ -128,6 +125,7 @@ def train_ablation_model(
             mask = batch['attention_mask'].to(device)
             aim_labels = batch['aimbot_labels'].to(device)
             elo_labels = batch['elo_labels'].to(device)
+            elo_mask = batch['elo_mask'].to(device)
             p_ids = batch['player_ids'].to(device)
 
             optimizer.zero_grad()
@@ -135,7 +133,7 @@ def train_ablation_model(
 
             loss_aim = criterion_aim(aim_prob, aim_labels)
             loss_con = criterion_con(emb, p_ids)
-            loss_elo = criterion_elo(elo_pred, elo_labels)
+            loss_elo = masked_smooth_l1_loss(elo_pred, elo_labels, elo_mask)
 
             # Thesis Reference: Chapter 3, Equation (14) — Multi-Task Composite Loss
             loss = loss_aim + 0.5 * loss_con + 0.2 * loss_elo
@@ -147,7 +145,7 @@ def train_ablation_model(
         scheduler.step()
 
         # Validate
-        val_metrics, _, _, _ = evaluate_model_on_loader(model, val_loader, device)
+        val_metrics, *_ = evaluate_model_on_loader(model, val_loader, device)
         if val_metrics['AUROC'] > best_val_auroc:
             best_val_auroc = val_metrics['AUROC']
             best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -214,7 +212,7 @@ def plot_ablation_results(df_results: pd.DataFrame, save_path: str = "reports/ab
 
     # Panel 3: Relative Degradation Delta (AUROC Drop from Full Model)
     ax3 = axes[2]
-    full_auroc = df_results.loc['Full ST-Trans (8 Channels)', 'AUROC']
+    full_auroc = df_results['AUROC'].iloc[0]  # first row is the full model
     delta_auroc = (full_auroc - df_results['AUROC']) * 100.0  # Percentage points drop
     rects_delta = ax3.bar(x, delta_auroc, width=0.5, color='#e377c2', alpha=0.85)
     ax3.set_ylabel('AUROC Performance Drop (% pts)', fontsize=11, fontweight='bold')
@@ -242,7 +240,7 @@ def run_ablation_study(
     seed: int = 42
 ):
     """
-    Executes the full systematic ablation study across all 6 configurations.
+    Executes the systematic ablation study across all configurations in ABLATION_CONFIGS.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Executing Feature Ablation Study on {device} (Epochs per config: {epochs}, Seed: {seed})")
@@ -262,7 +260,8 @@ def run_ablation_study(
             test_ratio=0.15,
             batch_size=batch_size,
             seed=seed,
-            feature_cols=feature_cols
+            feature_cols=feature_cols,
+            samples_per_player=4
         )
 
         model = train_ablation_model(
@@ -275,7 +274,7 @@ def run_ablation_study(
         )
 
         # Evaluate on test set
-        metrics, y_true, y_pred, _ = evaluate_model_on_loader(model, test_loader, device)
+        metrics, y_true, y_pred, *_ = evaluate_model_on_loader(model, test_loader, device)
         logging.info(
             f"--> Result for {config_name}: "
             f"AUROC={metrics['AUROC']:.4f} | AUPRC={metrics['AUPRC']:.4f} | "

@@ -88,3 +88,17 @@ class FocalLoss(nn.Module):
         focal_weight = alpha_t * ((1.0 - p_t) ** self.gamma)
         loss = (focal_weight * bce_loss).mean()
         return loss
+
+
+def masked_smooth_l1_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """
+    Thesis Reference: Chapter 3, Equation (18) — Auxiliary ELO Smooth L1 loss over known ELOs only.
+
+    pred, target: [batch_size, 1] normalized ELO (elo / 2000). mask: [batch_size, 1] bool,
+    True where the player's ELO is known. Returns 0 (with grad) when no ELO in the batch is known,
+    so unknown players never pull predictions toward a made-up default.
+    """
+    mask = mask.bool()
+    if not mask.any():
+        return pred.sum() * 0.0
+    return F.smooth_l1_loss(pred[mask], target[mask])

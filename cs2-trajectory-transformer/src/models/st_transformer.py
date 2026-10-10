@@ -31,9 +31,10 @@ class STTrajectoryTransformer(nn.Module):
     """
     Spatial-Temporal Trajectory Transformer (ST-Trans).
     
-    Processes 8D kinematic sequences [batch, seq_len, 8]:
-    - yaw, pitch, angular_velocity, angular_accel, angular_jerk,
-      spherical_curvature, curvature_entropy, tremor_power_8_12hz.
+    Processes kinematic sequences [batch, seq_len, feature_dim] (default: the 9 channels in
+    features.kinematics.MODEL_FEATURE_COLUMNS): pitch, angular_velocity, angular_accel,
+    angular_jerk, trajectory_curvature, curvature_entropy, tremor_power_8_12hz,
+    aim_error, aim_error_rate.
       
     Outputs:
     1. Aimbot Probability (Sigmoid binary classification: organic vs algorithmic aim).
@@ -42,7 +43,7 @@ class STTrajectoryTransformer(nn.Module):
     """
     def __init__(
         self, 
-        feature_dim: int = 8, 
+        feature_dim: int = 9, 
         d_model: int = 128, 
         nhead: int = 8, 
         num_layers: int = 4,

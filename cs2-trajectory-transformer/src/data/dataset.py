@@ -12,20 +12,16 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Dict, Optional, Union, Any
+from torch.utils.data import Dataset, DataLoader, Sampler
+from typing import Iterator, List, Tuple, Dict, Optional, Union, Any
+
+from features.kinematics import MODEL_FEATURE_COLUMNS
 
 
-FEATURE_COLUMNS = [
-    'yaw', 
-    'pitch', 
-    'angular_velocity', 
-    'angular_accel', 
-    'angular_jerk', 
-    'trajectory_curvature', 
-    'curvature_entropy', 
-    'tremor_power_8_12hz'
-]
+ELO_SCALE = 2000.0  # Thesis Eq (18): ELO targets are regressed as elo / 2000
+
+
+FEATURE_COLUMNS = MODEL_FEATURE_COLUMNS
 
 
 def normalize_kinematic_features(
@@ -56,6 +52,11 @@ def normalize_kinematic_features(
             feats[:, col_idx] = feats[:, col_idx] / 3.3219
         elif col_name == 'tremor_power_8_12hz':
             pass
+        elif col_name == 'aim_error':
+            feats[:, col_idx] = feats[:, col_idx] / np.pi
+        elif col_name == 'aim_error_rate':
+            sign = np.sign(feats[:, col_idx])
+            feats[:, col_idx] = sign * np.log1p(np.abs(feats[:, col_idx]))
     return feats
 
 
@@ -131,7 +132,9 @@ class CS2TrajectoryDataset(Dataset):
             
         aimbot_label = float(df['is_aimbot'].iloc[0]) if 'is_aimbot' in df.columns else 0.0
 
-        elo_label = float(df['player_elo'].iloc[0]) / 2000.0 if 'player_elo' in df.columns else 0.75
+        raw_elo = float(df['player_elo'].iloc[0]) if 'player_elo' in df.columns else float('nan')
+        elo_valid = bool(np.isfinite(raw_elo))
+        elo_label = raw_elo / ELO_SCALE if elo_valid else 0.0
         player_id = int(df['steamid'].iloc[0]) if 'steamid' in df.columns else 0
         match_id = str(df['match_id'].iloc[0]) if 'match_id' in df.columns else ""
         
@@ -140,6 +143,7 @@ class CS2TrajectoryDataset(Dataset):
             'seq_len': torch.tensor(seq_len, dtype=torch.long),
             'aimbot_label': torch.tensor(aimbot_label, dtype=torch.float32),
             'elo_label': torch.tensor(elo_label, dtype=torch.float32),
+            'elo_valid': torch.tensor(elo_valid, dtype=torch.bool),
             'player_id': torch.tensor(player_id, dtype=torch.long),
             'match_id': match_id
         }
@@ -152,7 +156,8 @@ def collate_trajectory_batch(batch: List[Dict[str, Any]]) -> Dict[str, Union[tor
         - features: [batch_size, max_batch_len, feature_dim]
         - attention_mask: [batch_size, max_batch_len] (True for valid ticks, False for padding)
         - aimbot_labels: [batch_size, 1]
-        - elo_labels: [batch_size, 1]
+        - elo_labels: [batch_size, 1] (elo / 2000; 0.0 where unknown)
+        - elo_mask: [batch_size, 1] (True where the player's ELO is known)
         - player_ids: [batch_size]
         - match_ids: List[str] of length batch_size
     """
@@ -165,6 +170,7 @@ def collate_trajectory_batch(batch: List[Dict[str, Any]]) -> Dict[str, Union[tor
     attention_mask = torch.zeros((batch_size, max_len), dtype=torch.bool)
     aimbot_labels = torch.zeros((batch_size, 1), dtype=torch.float32)
     elo_labels = torch.zeros((batch_size, 1), dtype=torch.float32)
+    elo_mask = torch.zeros((batch_size, 1), dtype=torch.bool)
     player_ids = torch.zeros(batch_size, dtype=torch.long)
     match_ids = []
     
@@ -174,6 +180,7 @@ def collate_trajectory_batch(batch: List[Dict[str, Any]]) -> Dict[str, Union[tor
         attention_mask[i, :slen] = True  # Valid positions
         aimbot_labels[i, 0] = sample['aimbot_label']
         elo_labels[i, 0] = sample['elo_label']
+        elo_mask[i, 0] = bool(sample.get('elo_valid', True))
         player_ids[i] = sample['player_id']
         match_ids.append(str(sample.get('match_id', '')))
         
@@ -182,6 +189,7 @@ def collate_trajectory_batch(batch: List[Dict[str, Any]]) -> Dict[str, Union[tor
         'attention_mask': attention_mask,
         'aimbot_labels': aimbot_labels,
         'elo_labels': elo_labels,
+        'elo_mask': elo_mask,
         'player_ids': player_ids,
         'match_ids': match_ids
     }
@@ -215,16 +223,185 @@ def compute_dataset_statistics(
     return mean, std
 
 
+def _read_file_label(fpath: str) -> int:
+    """Reads the window-level 'is_aimbot' label (0/1) from a Parquet file; 0 if unreadable."""
+    try:
+        import pyarrow.parquet as pq
+        tbl = pq.read_table(fpath, columns=['is_aimbot'])
+        return int(tbl['is_aimbot'][0].as_py())
+    except Exception as e:
+        logging.warning(f"Could not read is_aimbot from {fpath} ({e}); treating as clean.")
+        return 0
+
+
+def _components_are_degenerate(
+    clusters: List,
+    clean_clusters: List,
+    cheat_clusters: List,
+    match_labels: Dict[str, int],
+    match_file_counts: Dict[str, int],
+    val_ratio: float,
+    test_ratio: float
+) -> bool:
+    """
+    True when component-level splitting cannot give a usable held-out split:
+    (a) the largest component holds more than 1 - (val+test)/2 of all windows, or
+    (b) a class has >= 3 matches but fewer than 3 components (e.g. one giant clean component).
+    """
+    total = sum(match_file_counts.values())
+    largest = max(sum(match_file_counts.get(m, 0) for m in c[0]) for c in clusters)
+    if len(clusters) == 1:
+        return len(match_labels) >= 3
+    if total > 0 and largest / total > 1.0 - (val_ratio + test_ratio) / 2.0:
+        return True
+    for label, comps in ((0, clean_clusters), (1, cheat_clusters)):
+        n_matches = sum(1 for v in match_labels.values() if v == label)
+        if 0 < len(comps) < 3 and n_matches >= 3:
+            return True
+    return False
+
+
+def _partition_by_match_drop(
+    df_meta: pd.DataFrame,
+    match_labels: Dict[str, int],
+    train_ratio: float,
+    val_ratio: float,
+    seed: int
+) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Zero-leakage split for densely connected match-player graphs.
+
+    1. Matches are split per class (clean / cheater) into train/val/test by match count.
+    2. Test keeps every window of its matches. Val drops windows of test players.
+       Train drops windows of test and val players.
+    Result: M_i and M_j disjoint and P_i and P_j disjoint for all splits; only windows are discarded.
+    """
+    rng = np.random.default_rng(seed)
+    split_matches: Dict[str, List[str]] = {'train': [], 'val': [], 'test': []}
+    for label in (0, 1):
+        ms = sorted(m for m, v in match_labels.items() if v == label)
+        if not ms:
+            continue
+        ms = [ms[i] for i in rng.permutation(len(ms))]
+        n = len(ms)
+        if n >= 3:
+            n_va = max(1, int(round(n * val_ratio)))
+            n_te = max(1, int(round(n * (1.0 - train_ratio - val_ratio))))
+            n_tr = n - n_va - n_te
+            if n_tr < 1:
+                n_tr, n_va, n_te = n - 2, 1, 1
+            split_matches['train'] += ms[:n_tr]
+            split_matches['val'] += ms[n_tr:n_tr + n_va]
+            split_matches['test'] += ms[n_tr + n_va:]
+        elif n == 2:
+            split_matches['train'].append(ms[0])
+            split_matches['test'].append(ms[1])
+        else:
+            split_matches['train'].append(ms[0])
+
+    def rows(split: str) -> pd.DataFrame:
+        return df_meta[df_meta['match_id'].isin(split_matches[split])]
+
+    test_rows = rows('test')
+    test_players = set(test_rows['steamid'])
+    val_all = rows('val')
+    val_rows = val_all[~val_all['steamid'].isin(test_players)]
+    blocked = test_players | set(val_rows['steamid'])
+    train_all = rows('train')
+    train_rows = train_all[~train_all['steamid'].isin(blocked)]
+
+    dropped = (len(val_all) - len(val_rows)) + (len(train_all) - len(train_rows))
+    logging.info(
+        f"match_drop partition: train={len(train_rows)}, val={len(val_rows)}, test={len(test_rows)} windows; "
+        f"dropped {dropped} windows of players shared with a higher-priority split."
+    )
+
+    splits = {'train': train_rows, 'val': val_rows, 'test': test_rows}
+    for a_name, b_name in (('train', 'val'), ('train', 'test'), ('val', 'test')):
+        a_df, b_df = splits[a_name], splits[b_name]
+        assert set(a_df['match_id']).isdisjoint(b_df['match_id']), f"Data leakage: {a_name}/{b_name} share Match IDs!"
+        assert set(a_df['steamid']).isdisjoint(b_df['steamid']), f"Data leakage: {a_name}/{b_name} share Player IDs!"
+    if any(len(df) == 0 for df in splits.values()):
+        raise ValueError(
+            f"match_drop partition yielded an empty split (train={len(train_rows)}, val={len(val_rows)}, "
+            f"test={len(test_rows)}). More independent matches are required."
+        )
+    return train_rows['fpath'].tolist(), val_rows['fpath'].tolist(), test_rows['fpath'].tolist()
+
+
+class PlayerBalancedBatchSampler(Sampler):
+    """
+    P x K batch sampler for Supervised InfoNCE (Thesis Eq 17).
+
+    Random batches of 32 windows from hundreds of players almost never contain two windows
+    of the same player, so the contrastive loss has no positive pairs and returns 0. Each
+    batch here holds `players_per_batch` players with up to `samples_per_player` windows each.
+    Players with a single window still appear (as negatives for the others).
+
+    Player IDs are parsed from filenames '<match>_p<steamid>_seg<k>.parquet', which is the
+    same convention partition_dataset_files uses.
+    """
+
+    def __init__(self, file_paths: List[str], players_per_batch: int = 8, samples_per_player: int = 4, seed: int = 42):
+        self.players_per_batch = max(1, players_per_batch)
+        self.samples_per_player = max(1, samples_per_player)
+        self.seed = seed
+        self.epoch = 0
+        by_player: Dict[str, List[int]] = {}
+        for idx, f in enumerate(file_paths):
+            bname = os.path.basename(f)
+            pid = bname.split('_p')[1].split('_seg')[0] if '_p' in bname else bname
+            by_player.setdefault(pid, []).append(idx)
+        self.by_player = by_player
+        self.num_files = len(file_paths)
+
+    def _batches(self) -> List[List[int]]:
+        rng = np.random.default_rng(self.seed + self.epoch)
+        pools = {p: list(rng.permutation(ix)) for p, ix in self.by_player.items()}
+        batches: List[List[int]] = []
+        while pools:
+            players = list(pools.keys())
+            chosen = [players[i] for i in rng.permutation(len(players))[:self.players_per_batch]]
+            batch: List[int] = []
+            for p in chosen:
+                take, pools[p] = pools[p][:self.samples_per_player], pools[p][self.samples_per_player:]
+                batch.extend(int(i) for i in take)
+                if not pools[p]:
+                    del pools[p]
+            batches.append(batch)
+        return batches
+
+    def __iter__(self) -> Iterator[List[int]]:
+        batches = self._batches()
+        self.epoch += 1
+        return iter(batches)
+
+    def __len__(self) -> int:
+        return len(self._batches())
+
+
 def partition_dataset_files(
     data_dir: str,
     train_ratio: float = 0.80,
     val_ratio: float = 0.10,
     test_ratio: float = 0.10,
-    seed: int = 42
+    seed: int = 42,
+    strategy: str = "auto"
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Partitions Parquet files by connected components of Match-ID and Player-ID
     to strictly prevent data leakage across splits.
+
+    strategy:
+      - "components": whole connected components are atomic units (original behaviour).
+      - "match_drop": matches are split by class, then any window whose player already
+        appears in a higher-priority split is dropped (priority test > val > train).
+        Still zero-leakage (P and M pairwise disjoint), at the cost of discarding some
+        windows, mostly from train.
+      - "auto" (default): "components", unless the component graph is degenerate. That
+        happens when one giant component holds most windows (common when the same high-ELO
+        or pro players meet repeatedly) or when a class has many matches but fewer than 3
+        components. In that case it switches to "match_drop" and logs why.
     Guarantees:
       P_train ∩ P_val = ∅, P_train ∩ P_test = ∅, P_val ∩ P_test = ∅
       M_train ∩ M_val = ∅, M_train ∩ M_test = ∅, M_val ∩ M_test = ∅
@@ -305,19 +482,13 @@ def partition_dataset_files(
     # A match is labeled as cheater if ANY of its extracted segments contain is_aimbot == 1.
     match_labels = {}
     for m, group in df_meta.groupby('match_id'):
+        # Labels come from the Parquet 'is_aimbot' column only. Filename heuristics
+        # ('cheat' in path) mislabel clean players stored under a cheaters/ folder.
         has_cheater = 0
         for sample_f in group['fpath']:
-            if 'cheater' in sample_f.lower() or 'cheat' in sample_f.lower() or 'match_x' in sample_f.lower():
+            if _read_file_label(sample_f) == 1:
                 has_cheater = 1
                 break
-            try:
-                import pyarrow.parquet as pq
-                tbl = pq.read_table(sample_f, columns=['is_aimbot'])
-                if int(tbl['is_aimbot'][0].as_py()) == 1:
-                    has_cheater = 1
-                    break
-            except Exception:
-                pass
         match_labels[m] = has_cheater
 
     clean_clusters = [c for c in clusters if all(match_labels.get(m, 0) == 0 for m in c[0])]
@@ -328,6 +499,14 @@ def partition_dataset_files(
 
     if total_clusters == 0:
         raise ValueError(f"No connected components found in {data_dir}. Cannot partition dataset.")
+
+    match_file_counts = df_meta.groupby('match_id').size().to_dict()
+    if strategy not in ("auto", "components", "match_drop"):
+        raise ValueError(f"Unknown partition strategy '{strategy}'.")
+    if strategy == "match_drop" or (strategy == "auto" and _components_are_degenerate(
+            clusters, clean_clusters, cheat_clusters, match_labels, match_file_counts, val_ratio, test_ratio)):
+        logging.info("Partition strategy: match_drop (connected-component graph is degenerate or match_drop requested).")
+        return _partition_by_match_drop(df_meta, match_labels, train_ratio, val_ratio, seed)
 
     # Feasibility validation under strict zero-leakage constraints
     if C > 0 and X > 0:
@@ -359,37 +538,36 @@ def partition_dataset_files(
                 f"be split across partitions. Additional independent matches are required."
             )
 
+    def _cluster_size(cluster) -> int:
+        return int(sum(match_file_counts.get(m, 0) for m in cluster[0]))
+
     def _split_clusters_three_way(
         cluster_list: List,
         tr_r: float,
         va_r: float,
         seed_val: int
     ) -> Tuple[List, List, List]:
-        """Splits a list of >= 3 clusters into Train, Val, and Test, ensuring all three are non-empty."""
+        """
+        Splits >= 3 clusters into non-empty Train, Val and Test, balancing by window count
+        (not component count). The largest component always goes to Train so a giant
+        component can never become the whole test set.
+        """
         n = len(cluster_list)
         assert n >= 3, f"Requires at least 3 clusters, got {n}"
         rng = np.random.default_rng(seed_val)
-        indices = np.arange(n)
-        rng.shuffle(indices)
+        sizes = np.array([_cluster_size(c) for c in cluster_list], dtype=float)
+        largest = int(np.argmax(sizes))
+        others = [int(i) for i in rng.permutation(n) if i != largest]
 
-        n_tr = max(1, int(round(n * tr_r)))
-        n_va = max(1, int(round(n * va_r)))
-        if n_tr + n_va >= n:
-            n_tr = max(1, n - 2)
-            n_va = 1
-        n_te = n - n_tr - n_va
-        if n_te < 1:
-            n_te = 1
-            if n_tr > 1:
-                n_tr -= 1
-            else:
-                n_va = max(1, n_va - 1)
+        assignment = {0: [largest], 1: [others[0]], 2: [others[1]]}
+        totals = np.array([sizes[largest], sizes[others[0]], sizes[others[1]]])
+        targets = np.array([tr_r, va_r, max(1e-9, 1.0 - tr_r - va_r)]) * sizes.sum()
+        for i in others[2:]:
+            split = int(np.argmax((targets - totals) / targets))
+            assignment[split].append(i)
+            totals[split] += sizes[i]
 
-        return (
-            [cluster_list[i] for i in indices[:n_tr]],
-            [cluster_list[i] for i in indices[n_tr:n_tr + n_va]],
-            [cluster_list[i] for i in indices[n_tr + n_va:]]
-        )
+        return tuple([cluster_list[i] for i in assignment[k]] for k in range(3))
 
     def _split_clusters_two_way(
         cluster_list: List,
@@ -502,10 +680,13 @@ def create_partitioned_dataloaders(
     max_seq_len: int = 512,
     use_global_norm: bool = False,
     scaler_save_path: Optional[str] = None,
-    scaler_load_path: Optional[str] = None
+    scaler_load_path: Optional[str] = None,
+    samples_per_player: int = 0,
+    partition_strategy: str = "auto"
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Partitions dataset by connected components of Match-ID and Player-ID to strictly prevent data leakage.
+    samples_per_player > 0 enables the P x K PlayerBalancedBatchSampler for the training loader.
     Guarantees:
       P_train ∩ P_test = ∅
       M_train ∩ M_test = ∅
@@ -515,10 +696,10 @@ def create_partitioned_dataloaders(
         train_ratio=train_ratio,
         val_ratio=val_ratio,
         test_ratio=test_ratio,
-        seed=seed
+        seed=seed,
+        strategy=partition_strategy
     )
 
-        
     global_mean, global_std = None, None
     if scaler_load_path and os.path.exists(scaler_load_path):
         loaded = load_scaler_stats(scaler_load_path)
@@ -533,7 +714,17 @@ def create_partitioned_dataloaders(
     val_ds = CS2TrajectoryDataset(val_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
     test_ds = CS2TrajectoryDataset(test_files, feature_cols=feature_cols, max_seq_len=max_seq_len, global_mean=global_mean, global_std=global_std)
     
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_trajectory_batch)
+    if samples_per_player > 0:
+        # P x K batches so Supervised InfoNCE sees positive pairs (batch_size ~= P * K).
+        sampler = PlayerBalancedBatchSampler(
+            train_files,
+            players_per_batch=max(1, batch_size // samples_per_player),
+            samples_per_player=samples_per_player,
+            seed=seed
+        )
+        train_loader = DataLoader(train_ds, batch_sampler=sampler, collate_fn=collate_trajectory_batch)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_trajectory_batch)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_trajectory_batch)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_trajectory_batch)
     

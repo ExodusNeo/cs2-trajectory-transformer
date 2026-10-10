@@ -28,7 +28,7 @@ from scipy.stats import beta, spearmanr
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from models.st_transformer import STTrajectoryTransformer
-from data.dataset import create_partitioned_dataloaders
+from data.dataset import create_partitioned_dataloaders, FEATURE_COLUMNS
 
 
 def calibrate_operating_threshold(
@@ -538,14 +538,16 @@ def evaluate_model_on_loader(
             mask = batch['attention_mask'].to(device)
             aimbot_labels = batch['aimbot_labels'].to(device)
             elo_labels = batch['elo_labels'].to(device)
-            
+            elo_mask = batch['elo_mask'].cpu().numpy().flatten() if 'elo_mask' in batch else np.ones(len(features), dtype=bool)
+
             aimbot_prob, smurf_emb, elo_pred = model(features, attention_mask=mask)
             
             all_preds.extend(aimbot_prob.cpu().numpy().flatten())
             all_targets.extend(aimbot_labels.cpu().numpy().flatten())
             all_embeddings.append(smurf_emb.cpu().numpy())
-            all_elo_preds.extend((elo_pred * 2000.0).cpu().numpy().flatten())
-            all_elo_targets.extend((elo_labels * 2000.0).cpu().numpy().flatten())
+            # ELO metrics use only players whose ELO is known (unknown ELO is masked, not 1500).
+            all_elo_preds.extend((elo_pred * 2000.0).cpu().numpy().flatten()[elo_mask])
+            all_elo_targets.extend((elo_labels * 2000.0).cpu().numpy().flatten()[elo_mask])
             if 'player_ids' in batch:
                 all_player_ids.extend(batch['player_ids'].cpu().numpy().flatten())
             if 'match_ids' in batch:
@@ -559,7 +561,7 @@ def evaluate_model_on_loader(
     player_ids = np.array(all_player_ids)
     
     metrics = compute_metrics(y_true, y_pred, operating_threshold=operating_threshold)
-    elo_mae = float(np.mean(np.abs(np.array(all_elo_preds) - np.array(all_elo_targets))))
+    elo_mae = float(np.mean(np.abs(np.array(all_elo_preds) - np.array(all_elo_targets)))) if all_elo_preds else float('nan')
     metrics['ELO_MAE'] = elo_mae
     
     # Spearman's Rank Correlation (Table 8)
@@ -776,7 +778,8 @@ def profile_inference_latency(
     """
     import time
     model.eval()
-    dummy_input_1 = torch.randn(1, seq_len, 8, device=device)
+    feature_dim = getattr(model, 'feature_dim', 9)
+    dummy_input_1 = torch.randn(1, seq_len, feature_dim, device=device)
     dummy_mask_1 = torch.ones(1, seq_len, dtype=torch.bool, device=device)
     
     # Warmup
@@ -804,7 +807,7 @@ def profile_inference_latency(
     p99_lat = float(np.percentile(latencies, 99))
     
     # Batch=32 test for full match evaluation
-    dummy_input_32 = torch.randn(32, seq_len, 8, device=device)
+    dummy_input_32 = torch.randn(32, seq_len, feature_dim, device=device)
     dummy_mask_32 = torch.ones(32, seq_len, dtype=torch.bool, device=device)
     if device.type == 'cuda':
         torch.cuda.synchronize()
@@ -847,7 +850,7 @@ def main():
 
     # Load model
     model = STTrajectoryTransformer(
-        feature_dim=8, 
+        feature_dim=len(FEATURE_COLUMNS),
         d_model=args.d_model, 
         nhead=args.nhead, 
         num_layers=args.num_layers, 

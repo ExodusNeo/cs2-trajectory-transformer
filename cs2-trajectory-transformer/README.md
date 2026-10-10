@@ -9,12 +9,14 @@
 ## 📌 Project Overview
 This repository contains the official implementation for the thesis research: **"Non-Invasive Server-Side Aimbot and Smurf Detection in FPS Esports Using Micro-Kinematic Trajectory Transformers"**.
 
-The system processes 128-tick spatial-temporal mouse view-angles $(\phi, 	heta)$ and player movement telemetry from Counter-Strike 2 (CS2) match replay files (`.dem`) using `demoparser2`. It extracts neuromuscular kinematic features:
-1. **Euler-Wrapped Angular Velocity ($\omega_t$):** Geodesic great-circle angular speed on the unit sphere sight vector.
-2. **Angular Acceleration ($lpha_t$) and Minimum Jerk ($j_t$):** Higher-order derivatives of motor coordination (Flash & Hogan model).
-3. **Spherical Geodesic Trajectory Curvature ($\kappa_t$):** Curvature computed via 3D sight-line vector cross products.
-4. **Trajectory Curvature Shannon Entropy ($S_c$):** Sliding-window spatial entropy.
-5. **8–12 Hz Physiological Hand Tremor Band Power:** Relative spectral power via FFT/Welch's PSD to distinguish biological muscle tremor from algorithmic cursor updates.
+The system processes 64 Hz tick-sampled view angles (pitch, yaw), player positions and combat events from Counter-Strike 2 (CS2) match replays (`.dem`) using `demoparser2`. It extracts nine **candidate** channels (`MODEL_FEATURE_COLUMNS` in `src/features/kinematics.py`); their value is tested by ablation, not assumed:
+1. **Pitch** (absolute yaw is excluded because it encodes map orientation).
+2. **Great-circle angular velocity ($\omega_t$), acceleration ($\alpha_t$) and speed-derived jerk ($j_t$)**: smoothness proxies inspired by the Flash & Hogan minimum-jerk model.
+3. **Intrinsic geodesic curvature ($\kappa_g$) and its sliding-window Shannon entropy ($S_c$).**
+4. **8–12 Hz tremor band power** on signed angular rates. On the first real demo it sits below white noise, see `probe_replay_signal.py`.
+5. **Target-relative aim error** (crosshair → nearest living enemy head) **and its rate**.
+
+> Results in `reports/` are currently from synthetic pipeline-verification data and are not evidence. See `THESIS_TRACKER.md`.
 
 The extracted telemetry sequences are processed by a **Spatial-Temporal Trajectory Transformer (ST-Trans)** featuring a dual-head output (Aimbot Binary Classification + Smurf Contrastive Embedding).
 
@@ -76,8 +78,11 @@ To verify that all kinematic calculations, wrapping boundaries, and model infere
 # Run pytest unit test suite
 pytest tests/
 
-# Run end-to-end pipeline verification
-python demo_sample.py
+# Synthetic pipeline check (writes syn_* files to data/synthetic_parquet only)
+python generate_benchmark_dataset.py
+
+# Probe what real replays can physically show (quantization, tremor band vs white noise)
+python probe_replay_signal.py data/raw_demos/clean/*.dem
 ```
 
 ---
@@ -97,6 +102,6 @@ python crawl_replays.py --banned_file data/banned_cheaters.txt --matches_per_pla
 python crawl_replays.py --scan_cheaters --count 5
 
 # 4. Train ST-Trans Dual-Head Model:
-python train.py --data_dir data/processed_parquet --epochs 50 --batch_size 32
+python train.py --data_dir data/processed_parquet --epochs 50 --batch_size 32 --samples_per_player 4
 ```
 

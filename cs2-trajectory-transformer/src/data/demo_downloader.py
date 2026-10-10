@@ -7,6 +7,7 @@ Supports:
 """
 
 import os
+import re
 import sys
 import json
 import gzip
@@ -68,6 +69,14 @@ def polite_request(req: urllib.request.Request, max_retries: int = 3, initial_de
             time.sleep(1.0)
             
     return b""
+
+
+CHEATING_BAN_PATTERN = re.compile(r"\b(cheat\w*|aim ?bot\w*|aim ?assist|wall ?hack\w*|hack\w*)\b", re.IGNORECASE)
+
+
+def is_cheating_ban_reason(reason: str) -> bool:
+    """True when a FACEIT ban reason names cheating (not smurfing, toxicity or ban evasion)."""
+    return bool(CHEATING_BAN_PATTERN.search(reason or ""))
 
 
 class CS2ReplayDownloader:
@@ -281,9 +290,10 @@ class CS2ReplayDownloader:
         """
         bans = self.get_player_bans(player_id, api_key=api_key)
         for b in bans:
-            reason = str(b.get('reason', '')).lower()
-            # Faceit reasons: 'cheating', 'cheat', 'ban evasion', 'smurfing', etc.
-            if 'cheat' in reason or 'aim' in reason:
+            reason = str(b.get('reason', ''))
+            # Faceit reasons include 'cheating', 'ban evasion', 'smurfing', 'toxic behaviour'.
+            # Word-boundary match only: a bare substring test for 'aim' also matches 'claim'.
+            if is_cheating_ban_reason(reason):
                 starts_at = b.get('starts_at')
                 logging.info(f"[CONFIRMED CHEATER] Player {player_id} has confirmed ban: reason='{b.get('reason')}', starts_at={starts_at}")
                 return True, starts_at, b.get('reason')

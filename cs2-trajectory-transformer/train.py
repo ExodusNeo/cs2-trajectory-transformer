@@ -18,8 +18,8 @@ from sklearn.metrics import roc_auc_score, f1_score
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from models.st_transformer import STTrajectoryTransformer
-from models.losses import SupervisedInfoNCELoss, FocalLoss
-from data.dataset import create_partitioned_dataloaders
+from models.losses import SupervisedInfoNCELoss, FocalLoss, masked_smooth_l1_loss
+from data.dataset import create_partitioned_dataloaders, FEATURE_COLUMNS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -30,7 +30,6 @@ def train_one_epoch(
     optimizer, 
     criterion_aimbot, 
     criterion_contrastive,
-    criterion_elo,
     device: torch.device,
     lambda_contrastive: float = 0.5,
     lambda_elo: float = 0.2
@@ -45,17 +44,19 @@ def train_one_epoch(
         mask = batch['attention_mask'].to(device)
         aimbot_labels = batch['aimbot_labels'].to(device)
         elo_labels = batch['elo_labels'].to(device)
+        elo_mask = batch['elo_mask'].to(device)
         player_ids = batch['player_ids'].to(device)
-        
+
         optimizer.zero_grad()
         
         aimbot_prob, embeddings, predicted_elo = model(features, attention_mask=mask)
         
         loss_aim = criterion_aimbot(aimbot_prob, aimbot_labels)
         loss_con = criterion_contrastive(embeddings, player_ids)
-        loss_elo = criterion_elo(predicted_elo, elo_labels)
+        loss_elo = masked_smooth_l1_loss(predicted_elo, elo_labels, elo_mask)
         
-        loss = loss_aim + lambda_contrastive * loss_con + lambda_elo * loss_elo
+        # Thesis Equation (15): L_total = 1.0 * L_focal + 0.5 * L_infonce + 0.2 * L_elo
+        loss = loss_aim+ lambda_contrastive * loss_con + lambda_elo * loss_elo
         loss.backward()
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -98,7 +99,9 @@ def evaluate(
             all_targets.extend(aimbot_labels.cpu().numpy().flatten())
             
     n_batches = len(dataloader)
-    auroc = roc_auc_score(all_targets, all_preds) if len(set(all_targets)) > 1 else 0.5
+    # AUROC is undefined on a single-class validation split; return None so model selection
+    # falls back to validation loss instead of treating 0.5 as a real score.
+    auroc = roc_auc_score(all_targets, all_preds) if len(set(all_targets)) > 1 else None
     binary_preds = [1 if p >= 0.5 else 0 for p in all_preds]
     f1 = f1_score(all_targets, binary_preds, zero_division=0)
     
@@ -121,6 +124,8 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay coefficient (default: 1e-2)")
     parser.add_argument("--save_path", type=str, default="models/checkpoints/best_model.pt", help="Checkpoint save path")
     parser.add_argument("--use_global_norm", action="store_true", help="Use global dataset standardization rather than canonical domain scaling")
+    parser.add_argument("--samples_per_player", type=int, default=4, help="Windows per player in each P x K batch for InfoNCE (0 = plain random batches)")
+    parser.add_argument("--partition_strategy", type=str, default="auto", choices=["auto", "components", "match_drop"], help="Zero-leakage split strategy")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,14 +137,16 @@ def main():
         args.data_dir, 
         batch_size=args.batch_size,
         use_global_norm=args.use_global_norm,
-        scaler_save_path=scaler_save_path
+        scaler_save_path=scaler_save_path,
+        samples_per_player=args.samples_per_player,
+        partition_strategy=args.partition_strategy
     )
     print(f"[*] Dataset split: {len(train_loader.dataset)} Train, {len(val_loader.dataset)} Val, {len(test_loader.dataset)} Test samples.")
 
     # Model
     model = STTrajectoryTransformer(
-        feature_dim=8,
-        d_model=args.d_model,
+        feature_dim=len(FEATURE_COLUMNS),
+d_model=args.d_model,
         nhead=args.nhead,
         num_layers=args.num_layers,
         dim_feedforward=args.d_model * 4
@@ -148,13 +155,12 @@ def main():
     # Loss functions & Optimizer (Aligns with Chapter 3, Equations 15-18)
     criterion_aimbot = FocalLoss(alpha=0.25, gamma=2.0)
     criterion_contrastive = SupervisedInfoNCELoss(temperature=0.07)
-    criterion_elo = nn.SmoothL1Loss()
 
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2)
 
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
-    best_auroc = 0.0
+    best_score = float('-inf')
 
     print("\n" + "=" * 65)
     print(f"{'Epoch':<8}{'Train Loss':<14}{'Aimbot Loss':<14}{'Val AUROC':<12}{'Val F1':<10}")
@@ -167,21 +173,22 @@ def main():
             optimizer=optimizer,
             criterion_aimbot=criterion_aimbot,
             criterion_contrastive=criterion_contrastive,
-            criterion_elo=criterion_elo,
             device=device
         )
         scheduler.step()
 
         val_metrics = evaluate(model, val_loader, criterion_aimbot, device)
 
-        print(f"{epoch:<8}{train_metrics['loss']:<14.4f}{train_metrics['aimbot_loss']:<14.4f}{val_metrics['auroc']:<12.4f}{val_metrics['f1']:<10.4f}")
+        auroc_str = f"{val_metrics['auroc']:.4f}" if val_metrics['auroc'] is not None else "n/a"
+        print(f"{epoch:<8}{train_metrics['loss']:<14.4f}{train_metrics['aimbot_loss']:<14.4f}{auroc_str:<12}{val_metrics['f1']:<10.4f}")
 
-        if val_metrics['auroc'] >= best_auroc:
-            best_auroc = val_metrics['auroc']
+        score = val_metrics['auroc'] if val_metrics['auroc'] is not None else -val_metrics['eval_loss']
+        if score > best_score:
+            best_score = score
             torch.save(model.state_dict(), args.save_path)
 
     print("=" * 65)
-    print(f"[SUCCESS] Training Complete! Best Validation AUROC: {best_auroc:.4f}")
+    print(f"[SUCCESS] Training Complete! Best validation score (AUROC, or -loss if single-class): {best_score:.4f}")
     print(f"[SUCCESS] Model saved to {args.save_path}")
 
 
